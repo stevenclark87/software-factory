@@ -1,0 +1,9 @@
+{
+  "name": "s1-sandcastle-spike",
+  "private": true,
+  "type": "module",
+  "description": "S1 spike harness. Pins the Sandcastle version under test.",
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.14.0"
+  }
+}
