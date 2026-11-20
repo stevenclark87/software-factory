@@ -76,19 +76,18 @@ fan-out.
    resume payload arrive with slices 1b and 2.
    - `ClaudeCodeAdapter.prepare` generates the factory sandbox settings (edits in the worktree, `.env`
      reads and `curl` denied, no bypass mode), separate from coach-stack's interactive
-     `.claude/settings.json`. Settings generation stays in slice 1 because the path cannot run Claude
+     `.claude/settings.json`. Permissions come only from these settings and `--allowedTools` /
+     `--disallowedTools`; slice 1 verifies they apply without workspace trust (S1 showed they do). Settings generation stays in slice 1 because the path cannot run Claude
      Code without permissions.
    - Memory capture hooks are suppressed by the profile's `env` (`COACH_STACK_MEMORY_RUN=1`); the adapter
      runs `scripts/memory/session-start.mjs` at sandbox open, without the variable, and passes the output
      with `--append-system-prompt`.
    - `prepare` writes the ticket and its parent spec into the sandbox as read-only files and points the
-     implementer at them. Where the files sit depends on S1's read-only mount finding. If Sandcastle
-     supports an extra read-only mount, they are mounted outside the worktree. If not, they go in a
-     `.factory/` folder inside the worktree, excluded via `.git/info/exclude`, and slice 2 adds a check
-     that fails any diff touching `.factory/`. Here the source is the hand-written ticket; slice 4 replaces
+     implementer at them. S1 confirmed Sandcastle supports read-only mounts, so they are mounted outside the
+     worktree (no `.factory/` fallback). Here the source is the hand-written ticket; slice 4 replaces
      it with a GitHub fetch.
-   - Owns the sandbox image from S1's Dockerfile (tag includes a hash of the lockfile). Egress enforcement
-     is slice 1b.
+   - Owns the sandbox image from S1's Dockerfile (tag includes a hash of the lockfile; Claude Code via the
+     native installer, pinned by version and sha256). Egress enforcement is slice 1b.
    - Each Temporal activity gets a start-to-close timeout, because Temporal requires one.
    - Limits. The tracer profile sets small real values for one hand-written ticket: `stepTimeoutMinutes` 10,
      `maxTurnsPerStep` 30, `ticketRunMaxTokens` 500000 and `ticketRunMaxCostUsd` 2. These are not baselines.
@@ -97,10 +96,10 @@ fan-out.
    *Blocked by S1, S3 and 7a.*
 1b. **Hardening.** Makes slice 1 safe to run unattended. Must land before any S2-generated ticket runs.
    - **Egress proxy (required).** An allowlisting forward proxy (`HTTPS_PROXY`; allowlist = model API
-     only) with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. The sandbox sits on an internal Docker network
-     and the proxy container is its only way out. The mechanism follows S1's egress case: use the internal
-     network directly, or move the container after it starts and before the agent runs. No S2-generated
-     ticket runs without the proxy.
+     only) with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. The sandbox attaches only to an `--internal`
+     Docker network (S1: Sandcastle can choose the network), and the proxy, dual-homed, is its only way out.
+     The proxy also holds the model credential and adds it upstream; the sandbox holds a dummy value (S1
+     proof). No S2-generated ticket runs without the proxy.
    - The event log: a JSONL writer and the first events (`run.started`, `check.result`, `run.completed`).
      `run.completed` carries tokens, cost and the ticket's `size:*` label, or `unsized` when there is none.
    - Ticket-run transcripts are kept as run memory.
@@ -114,8 +113,8 @@ fan-out.
      come from the largest of several baseline runs (tracer bullet plus S1), not from one run. The ticket-run
      cap is about 5× that largest run. The ticket-run cap is only checked between steps, so the per-step
      limit matters:
-     - if S1 confirms `--max-budget-usd` works in print mode, each agent step gets `--max-budget-usd` set
-       to the ticket run's remaining budget, and `--max-turns` stays on as a backstop alongside it;
+     - S1 confirmed `--max-budget-usd` works in print mode, so each agent step gets `--max-budget-usd` set
+       to the ticket run's remaining budget minus about one call, and `--max-turns` stays on as a backstop;
      - if it does not work, `--max-turns` is the only limit inside a step. The plan records this as a
        known limit.
 
