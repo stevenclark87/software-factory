@@ -1,6 +1,6 @@
 # ADR 0001: Baseline architecture
 
-**Status:** Accepted, 2026-11-10
+**Status:** Accepted, 2026-11-10. Item 2 amended 2026-11-11 (sub-issues and blocking links are the target, pending S2).
 
 ## Context
 
@@ -12,8 +12,10 @@ These decisions are the baseline; later ADRs may supersede individual items.
 1. **Local-first execution.** v1 runs on one laptop with Docker Desktop. Sandcastle provides sandboxes.
    All execution goes through the `ExecutionRunner` interface so a remote or cloud runner can replace
    `LocalDockerRunner` without changes elsewhere.
-2. **GitHub Issues is the tracker.** Specs are parent issues, tickets are sub-issues, blocking links form
-   the ticket graph. Labels mirror run state (`factory:*`). Only the worker writes to GitHub.
+2. **GitHub Issues is the tracker.** Native sub-issues (spec = parent, tickets = sub-issues) and native
+   blocking links forming the ticket graph are the target, pending spike S2 (what `to-tickets` actually
+   writes). If S2 finds only text references, a new ADR supersedes this item. Labels mirror run state
+   (`factory:*`). Only the worker writes to GitHub.
 3. **Temporal is the engine.** TypeScript SDK, local dev server in v1, Origami's Temporal in a dedicated
    namespace later. Temporal was chosen over agent-specific orchestrators because Origami already runs it
    and it provides durable gates, retries and history.

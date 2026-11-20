@@ -47,16 +47,16 @@ Dashed lines are bounded rework loops; nothing loops without a retry limit or a 
 | 2 | Shape | HITL | `grill-with-docs`, `wayfinder` for multi-session work, `prototype`, `research` | Decisions, ADRs in `docs/architecture/adrs/`, glossary updates | Open questions closed |
 | 3 | Spec and slice | HITL | `to-spec`, `to-tickets` | Spec issue + tracer-bullet tickets with blocking links | **Gate: spec and breakdown approved** |
 | 4 | Build | AFK | `implement`, `tdd`, profile skills, `code-review` | One branch per ticket, checks green, review approved | Merged to the integration branch, or escalated |
-| 5 | Integrate | AFK | `resolving-merge-conflicts` | Integration branch with full CI, DynamoDB integration tests, security scans | Green or routed back |
-| 6 | Accept | HITL | docs generation | PR to `main`, local preview, generated docs and release notes | **Gate: human approves the PR** |
-| 7 | Release | HITL in v1 | none | Merge to `main`; existing deploy scripts run by a human | **Gate: deploy is human-run in v1** |
+| 5 | Integrate | AFK | `resolving-merge-conflicts` | Integration branch with full CI, DynamoDB integration tests, security scans | Green, or the whole spec escalates to `needs-human` |
+| 6 | Accept | HITL | docs generation | Acceptance PR from the integration branch to the base branch, local preview, generated docs and release notes | **Gate: human approves the PR** |
+| 7 | Release | HITL in v1 | none | Merge to the base branch; existing deploy scripts run by a human | **Gate: deploy is human-run in v1** |
 | 8 | Learn | AFK, reviewed | `retro`, `improve-codebase-architecture` | One PR of knowledge and skill updates | Human merges or discards |
 
 **Rework loops**
 
-- **Inside build:** a failed check or a rejected review sends the ticket back to the implementer in the same sandbox, up to 3 attempts. Then it escalates to a human with logs and diff attached.
+- **Inside build:** a failed check or a rejected review sends the ticket back to the implementer in the same sandbox, up to 3 attempts. Then it escalates to a human with logs and diff attached. A merge conflict at the integration branch is handled the same way: the ticket is rebased in its warm sandbox, checks re-run, and the rebase counts as an attempt (ADR 0002).
 - **Spec gaps:** an implementer or reviewer that finds the ticket ambiguous stops and flags `needs-human`. The ticket returns to stage 3, not to the build loop.
-- **Integration failures:** the failing ticket reopens; its dependents wait.
+- **Integration failures:** a failure in full CI or the integration tests on the integration branch escalates the whole spec to `factory:needs-human`, with the failing output attached and the ticket commits on the integration branch listed so a human can bisect. A human then clears it with a comment on the spec issue: `/factory resume integrate` after a fix is pushed, `/factory resume abandon`, or `/factory reopen #N`, which is accepted only for a merged or abandoned ticket of this spec and not after the acceptance PR has merged (see the Temporal mapping table). Phase 1 does not attribute the failure to a ticket automatically. Dependents already merged were built on code that full CI had not yet verified (ADR 0002).
 - **Learnings:** stage 8 feeds skills, `docs/knowledge/` and workflow definitions, all through reviewed PRs.
 
 ## Architecture
@@ -71,7 +71,7 @@ Only the worker talks to GitHub and to the runner; sandboxes read knowledge but 
 | --- | --- | --- |
 | Control | Factory UI and API, workflow interpreter, ticket scheduler, gate service, GitHub sync | Next.js app on localhost; Temporal dev server; one factory worker process (Node/TS) |
 | Execution | `ExecutionRunner`, harness adapters, Sandcastle, sandbox images | `LocalDockerRunner` on Docker Desktop; Claude Code adapter; one Node 20 image |
-| Knowledge | Canonical skills source, repo docs (AGENTS.md, ADRs, `docs/knowledge/`), GitHub Issues, run artifacts | Skills repo pinned by version; OKF bundle injected read-only; transcripts stored per run |
+| Knowledge | Target-repo skills, repo docs (AGENTS.md, ADRs, `docs/knowledge/`), GitHub Issues, run artifacts | Skills committed to coach-stack and pinned by `skills-lock.json` (a separate skills repo is deferred); OKF bundle injected read-only; transcripts stored per run |
 | Governance | Sandbox policy, secrets broker, model allowlist, telemetry, audit | Policy file per profile; env injection at run start; JSONL event log, exportable to the Databricks pipeline |
 
 **Local topology.** Four processes on one laptop: the Next.js app, `temporal server start-dev`, the factory worker, and Docker Desktop. The factory owns a clone of each managed repo under `~/factory/repos/<repo>`; Sandcastle creates a worktree and container per ticket from that clone.
@@ -85,18 +85,19 @@ One generic `FactoryWorkflow` interprets any JSON definition, so new lifecycles 
 | Factory concept | Temporal construct | Notes |
 | --- | --- | --- |
 | Lifecycle run (one feature) | Workflow `FactoryWorkflow(definition, issueRef)` | Definition passed as input and stored in history; edits never affect in-flight runs |
-| Ticket build loop | Child workflow `TicketWorkflow` per ticket | Owns implement, check, review and retry; parent waits on all children |
-| Fan-out over the ticket graph | Parent starts children whose blockers are closed; re-evaluates on each child completion | `maxParallel` caps concurrency (2 to 3 locally) |
+| Ticket build loop | Child workflow `TicketWorkflow` per ticket | Owns implement, check, review and retry; returns ready-to-merge to the parent, which waits on all children |
+| Fan-out over the ticket graph | Parent starts children whose blockers are merged; re-evaluates on each child completion | `maxParallel` caps concurrency (2 to 3 locally). The parent serializes merges into the integration branch (ADR 0002) |
 | Agent step | Activity `runAgentStep` on task queue `sandbox-runners` | Heartbeats while the agent works; start-to-close timeout per profile |
 | Check step | Activity `runChecks`, same sandbox | Returns structured pass/fail per command |
 | Human gate | Workflow waits on signal `gateDecision` (approve, reject, comment) | Durable wait of days at no cost; optional timer for reminders |
-| Escalation | Workflow sets ticket state `needs-human`, waits on signal `resume` | Human edits the ticket or fixes the branch, then resumes |
+| Escalation | Workflow sets ticket state `needs-human`, waits on signal `resume` | Human edits the ticket or fixes the branch, then resumes. Payload: `action` and an optional note passed to the next attempt; the retry counter resets. `retry` runs the next attempt in the same warm sandbox; `restart` opens a fresh sandbox from the current integration branch head, fetches the ticket and spec again, and discards the ticket branch; `abandon` closes the ticket as not done and marks its dependents `needs-human`, so a spec with an abandoned ticket cannot reach the gate until a human decides. Each `/factory resume` comment is processed once, deduplicated by comment id. Sent by the CLI (`factory resume`) or by a `/factory resume` issue comment from an allowlisted user; both send the same signal |
+| Spec-level escalation (Integrate failure) | Parent workflow waits on the same `resume` signal, scoped to the spec | Commands come only from comments on the spec issue by allowlisted users, deduplicated by comment id. `/factory resume integrate` re-runs Integrate on the current integration head after a human pushes a fix. `/factory resume abandon` abandons the spec. `/factory reopen #N` is accepted only when N is a ticket under this spec that has merged or been abandoned. It refuses any other N, and refuses every reopen once the spec's acceptance PR has merged. A refusal posts a reply comment and changes nothing. An accepted reopen starts a new ticket run for ticket N; it fixes forward on the current head, adds a second squash commit with its own trailer, reverts nothing, and Integrate re-runs after it merges. A human push straight to the integration branch bypasses per-ticket review; the acceptance PR gate covers it. Labels stay worker-written, except `factory:spec-approved` |
 | GitHub sync | Activities `syncIssues`, `openPr`, `setLabels` on queue `control` | Polling in v1; no public webhook needed |
 | Kanban and run feed | Queries + search attributes `Repo`, `IssueNumber`, `Stage`, `Profile` | UI reads Temporal; no separate run-state database |
 
 **Determinism rules.** The interpreter does no I/O; all I/O happens in activities. Definition changes take effect only for new runs. Interpreter code changes use Temporal patching.
 
-**Idempotency.** Every activity takes a run key (`workflowId + stepId + attempt`), so a retried `openPr` or `setLabels` never duplicates work.
+**Idempotency.** Every activity takes a run key (`workflowId + stepId + attempt`), so a retried `openPr` or `setLabels` never duplicates work. The squash merge into the integration branch is keyed differently: each commit carries a merge trailer with the ticket-run workflow ID, and the merge activity checks for it first, so a retried merge is a no-op. The run key includes the attempt, so it cannot serve here.
 
 ## Workflow definitions and editor
 
@@ -159,22 +160,26 @@ There are no standing specialist agents. Every step runs one generalist harness,
   "agent": { "harness": "claude-code", "model": "claude-opus-5-5", "effort": "high" },
   "skills": ["react", "add-screen", "frontend-design", "hono", "dynamodb", "zod", "vitest"],
   "image": "factory/coach-stack-node20:1",
+  "env": { "COACH_STACK_MEMORY_RUN": "1" },
   "tools": { "allow": ["Read", "Edit", "Write", "Bash(npm *)", "Bash(npx *)"], "deny": ["Bash(curl *)", "Read(**/.env)"] },
   "network": { "egress": ["registry.npmjs.org"] },
   "checks": ["TZ=America/New_York npm run -w apps/web test", "npm run -w apps/api test", "npm run -w apps/web build", "bash scripts/ci/quality-ratchet.sh"],
-  "review": { "rubrics": ["standards", "spec", "tenant-isolation"] }
+  "review": { "rubrics": ["standards", "spec", "tenant-isolation"] },
+  "limits": { "stepTimeoutMinutes": null, "maxTurnsPerStep": null, "ticketRunMaxTokens": null, "ticketRunMaxCostUsd": null }
 }
 ```
 
-**Profile selection.** An explicit `profile:*` label wins. Otherwise the scheduler matches the paths a ticket names against `selectWhen.paths`; a ticket that spans several profiles gets the union profile (`fullstack`). Unknown paths fall back to the default profile and are flagged for review.
+In this example each `limits` value is `null`, meaning unset: no baseline exists yet, and the fields stay numeric once set. Slice 1 refuses to run a profile with any `null` limit. The tracer-bullet profile in slice 1 carries small real values instead: `stepTimeoutMinutes` 10, `maxTurnsPerStep` 30, `ticketRunMaxTokens` 500000 and `ticketRunMaxCostUsd` 2. Those are for one hand-written ticket, not baselines. Real defaults come from baselines in slice 1b.
 
-**Agent binding.** `{harness, model, effort}` resolves in order: workflow step, then profile, then workflow defaults. Every run records the resolved binding.
+**Profile selection.** An explicit `profile:*` label wins. Otherwise the scheduler matches the paths a ticket names against `selectWhen.paths`; a ticket that spans several profiles gets the union profile (`fullstack`). Unknown paths fall back to the default profile and are flagged for review. **Phase 1:** only the explicit `profile:<name>` label selects a profile, and only `fullstack` and `web` exist; a ticket with no profile label escalates to `needs-human` (fail closed). Path matching and the other profiles come later.
+
+**Agent binding.** `{harness, model, effort}` resolves in order: workflow step, then profile, then workflow defaults. Every ticket run records the resolved binding.
 
 **Harness adapters.** Each harness is behind one interface:
 
 ```ts
 interface HarnessAdapter {
-  prepare(sandbox: Sandbox, profile: Profile): Promise<void>; // skills, instructions, permissions, memory snapshot
+  prepare(sandbox: Sandbox, profile: Profile): Promise<void>; // skills, instructions, permissions, memory snapshot, ticket and spec files
   run(sandbox: Sandbox, step: AgentStep): Promise<RawResult>;
   parseEvents(raw: RawResult): FactoryEvent[];               // normalized telemetry
   extractOutput(raw: RawResult, schema: JsonSchema): unknown; // schema-validated result
@@ -183,7 +188,7 @@ interface HarnessAdapter {
 
 v1 ships `ClaudeCodeAdapter` only. Claude-specific features (hooks, `settings.json`, subagent files) stay inside it; nothing in the engine, schema or UI depends on them.
 
-**Reviewers.** Review runs in a fresh session with read-only tools. Rubrics compose: `standards` and `spec` (Pocock's two axes) always run; `tenant-isolation`, `iam-least-privilege` and `docs-impact` are added by profile or by touched paths. Phase 2 moves the reviewer to a second provider to remove self-grading.
+**Reviewers.** Review runs in a fresh session with read-only tools, and gets the same ticket and spec files as the implementer, through `prepare`. Its diff base is the merge-base with the integration branch (`git merge-base HEAD factory/feature-<spec>`), not the integration head at sandbox open, so the diff stays correct after a conflict rebase. The `standards` rubric reads coach-stack's own AGENTS.md and docs from the worktree. Rubrics compose: `standards` and `spec` (Pocock's two axes) always run; `tenant-isolation`, `iam-least-privilege` and `docs-impact` are added by profile or by touched paths. Phase 2 moves the reviewer to a second provider to remove self-grading.
 
 **Subagents.** Allowed inside a step for parallel read-only work (exploration, multi-rubric review). Never for parallel writes to the same branch.
 
@@ -193,29 +198,29 @@ Every AFK step runs in a Sandcastle container on its own branch, reached only th
 
 ```ts
 interface ExecutionRunner {
-  openSandbox(job: TicketJob): Promise<SandboxHandle>;   // worktree + branch + container
+  openSandbox(job: TicketJob): Promise<SandboxHandle>;   // worktree + branch + container + job.services
   exec(h: SandboxHandle, cmd: string): Promise<ExecResult>;
   runAgent(h: SandboxHandle, step: AgentStep, adapter: HarnessAdapter): Promise<RawResult>;
   closeSandbox(h: SandboxHandle, keep: 'branch' | 'none'): Promise<BranchRef | null>;
 }
 ```
 
-The build loop opens one sandbox per ticket and keeps it warm across implement, check, review and retries, so state and installed dependencies carry over. `LocalDockerRunner` implements it in v1; a remote runner or microVM provider implements it later.
+The build loop opens one sandbox per ticket and keeps it warm across implement, check, review and retries, so state and installed dependencies carry over. The sandbox is still disposable: the worker commits the ticket branch at the end of every attempt, so after a worker restart or a laptop sleep the ticket workflow reopens a sandbox from the branch in the local clone and continues from the last attempt boundary. Agent activities heartbeat so a dead step is detected. `LocalDockerRunner` implements it in v1; a remote runner or microVM provider implements it later.
 
 **Sandbox policy**
 
 | Control | v1 rule |
 | --- | --- |
 | Filesystem | Only the ticket's worktree is mounted; no host home directory, SSH keys or cloud config |
-| Branch | One branch per ticket (`factory/<issue>-<slug>`); never pushes to `main` |
-| Network | Egress allowlist per profile (package registry, model API); everything else blocked |
+| Branch | One branch per ticket (`factory/<issue>-<slug>`); agents never push; the worker pushes ticket branches for audit and never pushes to `main` |
+| Network | Egress allowlist per profile (model API; dependencies are baked into the image); everything else blocked. Phase 1 builds an allowlisting forward proxy (`HTTPS_PROXY`; slice 1b). The sandbox sits on an internal Docker network and the proxy container is its only way out, with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. If Sandcastle cannot choose the container's network, the runner moves the container after it starts and before the agent runs (`docker network disconnect bridge`, then connect it to the internal network). S1 records which case applies. No S2-generated ticket runs without the proxy |
 | Secrets | Model API key injected at run start through env, scoped to the run; no AWS, Auth0 or GitHub credentials inside |
-| GitHub | The factory worker opens PRs and sets labels; agents never hold a GitHub token |
+| GitHub | The factory worker opens PRs and sets labels; agents never hold a GitHub token. When the sandbox opens, the worker fetches the originating ticket and its parent spec and writes them in as read-only files. They go outside the worktree if S1 confirms Sandcastle supports an extra read-only mount. Otherwise they go in `.factory/` inside the worktree, excluded via `.git/info/exclude`, and a check fails any diff touching `.factory/`. `restart` fetches them again |
 | Permissions | Factory-generated harness settings: edits allowed in the worktree, `.env` reads and `curl` denied, no bypass mode |
 | Resources | CPU and memory caps per container; wall-clock timeout per step |
 | Cleanup | Container destroyed after each ticket; branch kept for the PR |
 
-**Services.** Tests that need DynamoDB Local run at Integrate, with DynamoDB Local as a sidecar container on the sandbox's private network, not Docker-in-Docker.
+**Services.** Tests that need DynamoDB Local run at Integrate, with DynamoDB Local as a sidecar container on the sandbox's private network, not Docker-in-Docker. `TicketJob` carries a `services` list (each with `image`, `port` and a health check); the field is defined in the first version of the interface (Phase 1, slice 1). `LocalDockerRunner` starts the services on a per-sandbox Docker network when the sandbox opens and tears them down with it (implemented in slice 6).
 
 ## Memory and knowledge
 
@@ -227,7 +232,7 @@ Keep the OKF format; change the write path. Sandboxes read project knowledge but
 | Run memory | Transcript, working notes, check output, review findings | Temporal history + run artifact store | The run itself | Retries in the same ticket; Learn stage; UI |
 | Factory learnings | Repeated failure patterns, skill gaps, profile tuning | Learn-stage PR to the repo or skills source | Learn stage | Humans approve; then agents via project knowledge |
 
-**In a sandbox.** The harness adapter injects the capped OKF snapshot at start for every harness, replacing the Claude-only session-start hook. `recall.mjs` remains callable as a plain command. Memory capture hooks are disabled in AFK runs.
+**In a sandbox.** The harness adapter injects the capped OKF snapshot at start for every harness, replacing the Claude-only session-start hook. `recall.mjs` remains callable as a plain command. Memory capture hooks are suppressed in AFK runs by the profile's `env` (`COACH_STACK_MEMORY_RUN=1`), not by adapter code; the adapter runs `scripts/memory/session-start.mjs` itself at sandbox open, without the variable, and passes the output with `--append-system-prompt`. Ticket-run transcripts are kept as run memory for the Learn stage.
 
 **Learn stage.** After a feature closes, an agent reads that feature's run memory and proposes knowledge entries, skill edits and profile changes in one PR, each item linked to the runs that justify it.
 
@@ -242,16 +247,18 @@ GitHub is the system of record for work; Temporal is the system of record for ex
 | `factory:triage` | New, not yet shaped | Human or intake |
 | `factory:shaping` | In grilling or wayfinding | Shape stage |
 | `factory:spec-review` | Spec and tickets awaiting the gate | Spec stage |
-| `factory:ready` | Approved, waiting on blockers or capacity | Gate approval |
+| `factory:spec-approved` | On a spec: approved to run. `factory run <spec>` refuses to start without it. In Phase 1 a human sets it by hand; there is no gate node yet | Human (Phase 1); gate approval later |
+| `factory:ready` | On a ticket: approved, waiting on blockers or capacity | Worker, when a run starts |
+| `size:s`, `size:m`, `size:l` | Ticket size estimate; the event log compares it with actual tokens and cost. A ticket with no size label still runs, recorded as `unsized` | `to-tickets` |
 | `factory:building` | Sandbox running | Scheduler |
-| `factory:needs-human` | Escalated, ambiguous or over retry limit | Build loop |
+| `factory:needs-human` | Escalated (ambiguous, or over retry limit), or a spec whose Integrate failed | Build loop; Integrate |
 | `factory:in-review` | Ticket branch merged to integration; feature PR open | Integrate |
-| `factory:done` | Merged to `main` | Accept |
+| `factory:done` | Acceptance PR merged to the base branch | Accept |
 | `profile:<name>` | Forces a capability profile | Human or `to-tickets` |
 
-**Branches and PRs.** Each ticket branch merges into a feature integration branch (`factory/feature-<spec>`). The human gate reviews one PR from that branch to `main`, with every ticket's checks and review findings linked.
+**Branches and PRs.** Once a ticket's checks and review pass, its ticket workflow returns ready-to-merge and the parent workflow has the worker merge the branch directly into the feature integration branch (`factory/feature-<spec>`) with git, one merge at a time (ADR 0002). Dependent tickets branch from the integration branch head. If the integration branch has moved and the merge conflicts, the ticket is rebased in its warm sandbox and its checks re-run; that counts as an attempt. Attempt commits stay in the factory's local clone; at the merge point the worker pushes the ticket branch (every attempt, for audit) and squash-merges it, one commit per ticket, which also keeps the integration branch bisectable. Each squash commit carries a merge trailer keyed on the ticket-run workflow ID, so a repeated merge is a no-op. There is no PR per ticket. The only PR is the acceptance PR from the integration branch to the target repo's base branch (`factory-pilot` for coach-stack, never `main`), with every ticket's checks and review findings linked. The human gate reviews that PR.
 
-**Sync.** The factory worker polls in v1 and writes labels, comments and PRs with a fine-grained token scoped to the pilot repo. Agents never call GitHub directly.
+**Sync.** The factory worker polls in v1 and writes labels, comments and PRs with a fine-grained token scoped to the pilot repo. Agents never call GitHub directly. The poll also reads `/factory resume` comments from allowlisted users and turns them into the `resume` signal.
 
 ## Factory UI
 
@@ -260,10 +267,10 @@ Five views cover v1. Temporal's own web UI stays available for engineers debuggi
 | View | What it shows | Actions |
 | --- | --- | --- |
 | Board | Every ticket as a card in columns by stage, with profile, binding, attempt count and blockers | Open a run; force a profile; pause or cancel |
-| Run | One ticket's timeline: each step, its live agent stream, check results, review findings, diff | Retry a step; escalate; open the branch |
+| Ticket run | One ticket's timeline: each step, its live agent stream, check results, review findings, diff | Retry a step; escalate; open the branch |
 | Gate inbox | Specs, breakdowns and PRs waiting on a person, oldest first | Approve, reject, comment (sent as Temporal signals) |
 | Workflow editor | Canvas and JSON side by side, validation panel, version history | Edit, validate, dry run, publish a version |
-| Profiles and skills | Profiles with their skills, checks and bindings; pass rate, retries and cost per profile and binding | Edit profiles; pin skill versions |
+| Profiles and skills | Profiles with their skills, checks and bindings; pass rate, retries and cost per profile and binding | Edit profiles; pin skills by commit in `skills-lock.json` |
 
 **Stack.** Next.js and React with React Flow for the editor. The API reads Temporal through queries and search attributes and writes only through signals and new workflow starts. Live agent streams come from the worker over server-sent events.
 
@@ -271,15 +278,15 @@ Five views cover v1. Temporal's own web UI stays available for engineers debuggi
 
 Every agent action is attributable to a run, a ticket and a person who approved the work, and every run can be replayed from its history.
 
-**Event model.** Adapters normalize harness output into one event schema: `run.started`, `agent.message`, `tool.call`, `tool.result`, `check.result`, `review.finding`, `gate.decision`, `run.completed`. Each carries run id, ticket, profile, resolved binding, tokens and cost. v1 writes JSONL per run; the format is shaped to load into the existing Databricks telemetry pipeline when the factory moves to Origami.
+**Event model.** Adapters normalize harness output into one event schema: `run.started`, `agent.message`, `tool.call`, `tool.result`, `check.result`, `review.finding`, `gate.decision`, `run.completed`. Each carries run id, ticket, profile, resolved binding, tokens and cost. `run.completed` also carries the ticket's `size:*` label (or `unsized`), so estimated size can be compared with actual tokens and cost from the first run. v1 writes JSONL per run; the format is shaped to load into the existing Databricks telemetry pipeline when the factory moves to Origami.
 
 **Controls**
 
 - **Model allowlist** per profile; an unlisted binding fails validation at publish time.
-- **Skill pinning** by version or hash, so a skill change is a reviewed change.
+- **Skill pinning** through the committed target repo: `.agents/skills/`, the relative symlinks in `.claude/skills/` and `skills-lock.json` land as one commit, so a skill change is a reviewed change. Sandboxes load skills only from the committed worktree. A separate canonical skills repo is deferred.
 - **Approvals recorded** in Temporal history with who, when and what artifact version.
 - **MCP access** off in v1 sandboxes. When needed, it routes through the existing MCP gateway rather than direct connections.
-- **Cost guardrails:** a token budget per step and per feature; exceeding it escalates instead of continuing.
+- **Cost guardrails:** a token budget per step and per feature; exceeding it escalates instead of continuing. **Phase 1** has two circuit breakers only: a wall-clock timeout per agent step and a token and cost cap per ticket run, which escalates when hit. Both are the profile's `limits` values; an unset value is `null`, and a run refuses to start with a `null` limit. The ticket-run cap is only checked between steps, so each agent step also gets a per-step limit. If S1 confirms that `--max-budget-usd` works in print mode, the step gets `--max-budget-usd` set to the ticket run's remaining budget, with `--max-turns` kept as a backstop alongside it. If it does not, `--max-turns` is the only limit inside a step, which the plan records as a known limit. Defaults come from the largest of several baseline runs (tracer bullet and S1), with the ticket-run cap at about 5× that run. **Phase 2** uses the Phase 1 estimate-versus-actual data to set per-size caps and a per-feature budget that the scheduler draws down, stopping dispatch when the remaining budget is below the next ticket's expected cost.
 
 **Metrics to track from day one:** first-pass check rate, review rejection rate, retries per ticket, escalation rate, human time at gates, tokens and cost per merged ticket, and time from spec approval to merge.
 
@@ -297,21 +304,22 @@ coach-stack is an npm-workspaces monorepo (`apps/web` React 18 + Vite, `apps/api
 | infra | `infra/` | aws-cdk, docker | infra build, `cdk synth` prod and dev with no credentials | iam-least-privilege, no always-on resources |
 | ai-feature | `services/ai-*`, `config/ai-assist.ts` | aws-bedrock, zod, vitest | api tests including AI assist tests | prompt and fallback behavior |
 
-All five share one image: Node 20, git, AWS CDK CLI pinned to 2.1111.0, dependencies pre-installed from `package-lock.json`.
+All five share one image: Node 20, git, AWS CDK CLI pinned to 2.1111.0, Claude Code at a pinned version, and an npm cache baked from `package-lock.json`. The sandbox runs `npm ci --offline` when it opens, so dependencies reach the mounted worktree without network access (spike S1 verifies this). The image tag carries a hash of the lockfile, so a changed lockfile triggers a rebuild. The Dockerfile starts in S1 and is owned by slice 1.
 
 **Pre-flight fixes before the first run**
 
-- [ ] Disable the memory capture hooks (`SessionStart`, `Stop`, `PreCompact`, `SessionEnd`) in factory runs; the adapter injects the snapshot instead
-- [ ] Rewrite `.claude/agents/devops-engineer.md`: its body is a stray summary and it loads only `docker`, not `aws-cdk`
-- [ ] Add CDK assertion tests or cdk-nag to `infra` (its test script is currently a placeholder)
-- [ ] Allow quality-ratchet baseline changes only at Integrate, to avoid conflicts between parallel tickets
-- [ ] Generate factory sandbox settings separate from the interactive `.claude/settings.json`
-- [ ] Add `npm run test:integration` that starts DynamoDB Local as a sidecar and runs `RUN_DYNAMO_TESTS=true`
-- [ ] Consolidate skills from `.claude/skills`, `.codex/skills` and `.agents/skills` into the canonical source
-- [ ] Update AGENTS.md: one agent per vertical-slice ticket, replacing the separate backend and frontend lanes
-- [ ] Install Pocock's lifecycle skills and point ADR output at `docs/architecture/adrs/`
+- [ ] (slice 7b) Rewrite `.claude/agents/devops-engineer.md`: its body is a stray summary and it loads only `docker`, not `aws-cdk`
+- [ ] (slice 7b) Add CDK assertion tests or cdk-nag to `infra` (its test script is currently a placeholder)
+- [ ] (slice 7b) Add `npm run test:integration` that starts DynamoDB Local as a sidecar and runs `RUN_DYNAMO_TESTS=true`
+- [ ] (slice 7a) Commit the skills as they are: `.agents/skills/` (Pocock's), the relative symlinks in `.claude/skills/`, and `skills-lock.json`, in one commit. Committing only the symlinks leaves them broken. This commit is the skill pin, and it blocks S2 and slice 1
+- [ ] (slice 7b) Consolidate skills from `.claude/skills`, `.agents/skills` and `.codex/skills`. `.codex/skills` is ignored by Claude Code and holds six older, shorter versions of `.claude/skills` content. Consolidation lands as later reviewed commits that re-pin `skills-lock.json`
+- [ ] (slice 7a) Update AGENTS.md: one agent per vertical-slice ticket, replacing the separate backend and frontend lanes. This AGENTS.md edit lands in the same commit as the other AGENTS.md edits
+- [ ] (slice 7a) Create `profile:fullstack`, `profile:web` and `size:s`, `size:m`, `size:l` labels (keeping the existing `api` and `frontend` labels) and add an AGENTS.md instruction for `to-tickets` to apply them
+- [ ] (slice 7a) Install Pocock's lifecycle skills and point ADR output at `docs/architecture/adrs/` (skills installed via `setup-matt-pocock-skills`; ADR path not yet confirmed)
 
-**First pilot feature.** A small vertical slice touching web and api, with no infra or auth changes, chosen from the coach-stack backlog.
+Three items from the earlier pre-flight list are factory work, not coach-stack changes. Memory capture hooks are suppressed by setting `COACH_STACK_MEMORY_RUN=1` in the profile `env`, which coach-stack's hooks already honor (`capture.mjs` exits and `session-start.mjs` returns nothing when it is set); the adapter runs `session-start.mjs` itself at sandbox open, without the variable, and passes the output with `--append-system-prompt`. Factory sandbox settings (separate from the interactive `.claude/settings.json`) are generated by `ClaudeCodeAdapter.prepare` (Phase 1, slice 1). Ratchet baseline changes are allowed only at Integrate: a check fails any ticket whose diff touches the baseline block in `quality-ratchet.sh` (slice 2), which avoids conflicts between parallel tickets.
+
+**First pilot feature.** coach-stack issue #193, "Add in-app Help center with guides and feature breakdown" (labeled `factory-pilot`), is an intake issue. Spike S2 runs `grill-with-docs`, `to-spec` and `to-tickets` on it in a separate Claude Code session on the `factory-pilot` branch. `to-spec` creates a new spec issue in the standard format, the tickets are its sub-issues, and #193 is closed with a "superseded by" link. Grilling also resolves #193's open questions. Feature-doc automation (the issue's `source: generated` goal) is out of scope for Phase 1. The spec and tickets are the input for the Phase 1 gate.
 
 ## Phased build plan
 
@@ -325,20 +333,21 @@ Phases 1 to 3 run on a laptop against coach-stack. Phase 4 is the only one that 
 
 **Open questions**
 
-- [ ] Does Pocock's `to-tickets` write GitHub sub-issues and native blocking links, or text references the factory must parse?
-- [ ] Which coach-stack feature is the first pilot slice?
+- [ ] Does Pocock's `to-tickets` write GitHub sub-issues and native blocking links, or text references the factory must parse? Native is the working assumption (ADR 0001, item 2); spike S2 settles it, and text references would need a superseding ADR.
+- [x] Which coach-stack feature is the first pilot slice? Issue #193, "Help feature".
 - [ ] Is a fullstack ticket that touches both apps the default, or should `to-tickets` be told to split web and api where it can?
 - [ ] Who approves gates in the pilot: you alone, or a second reviewer to test the gate inbox?
-- [ ] Which Temporal server version and SDK does Origami run, so v1 pins compatible versions?
+- [x] Which Temporal server version and SDK does Origami run? Deferred: S3 pins the current stable TypeScript SDK and Temporal CLI dev server and records both. Compatibility with Origami's Temporal is a Phase 4 question.
 - [ ] Where do run artifacts live locally: Temporal history only, or a local object store for large transcripts and diffs?
+- [x] After an Integrate failure, what clears the spec's `factory:needs-human`? Answer: a comment on the spec issue, `/factory resume integrate`, `/factory resume abandon` or `/factory reopen #N` (Temporal mapping table; ADR 0002 Decision 5).
 
 **Risks**
 
 | Risk | Effect | Mitigation |
 | --- | --- | --- |
-| Tickets not truly independent | Merge conflicts at Integrate; wasted runs | `maxParallel` of 2 at first; Integrate reopens the conflicting ticket |
+| Tickets not truly independent | Merge conflicts at the merge point; wasted runs | `maxParallel` of 2 at first; a conflicting ticket is rebased in its sandbox; an Integrate failure escalates the spec for a human to bisect |
 | Self-grading review | Defects pass review | Fresh-session reviewer with rubrics now; second-provider reviewer in phase 2 |
 | Laptop resource limits | Slow or failed sandboxes | Cap parallelism; resource limits per container; pre-built image |
-| Skill drift | Quality changes silently | Pin skills by version; changes through Learn-stage PRs |
+| Skill drift | Quality changes silently | Pin skills in the target repo (`skills-lock.json`); changes through Learn-stage PRs |
 | Cost overrun from retry loops | Token spend grows unnoticed | Per-step and per-feature budgets that escalate |
 | Sandcastle API changes | Runner breaks on upgrade | Pin the version; all calls behind `ExecutionRunner` |
