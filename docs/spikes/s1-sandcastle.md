@@ -235,6 +235,35 @@ Result: **the proxy approach works for a trivial run.** Slice 1b uses it. It doe
 - Budget: the step limit is the remaining ticket budget minus about one call. It is a one-call overshoot limit, not a hard cap.
 - Model: Opus 5.5 confirmed (F1).
 
+### F7. How the credential reaches HTTPS traffic (round 3, subscription credential)
+
+Answer, from the proxy code and the probes:
+
+- The sandbox speaks **plain HTTP** to the proxy. `ANTHROPIC_BASE_URL=http://<proxy>:8080` on the internal Docker network. The recorder logged the request as a plain `POST /v1/messages?beta=true` request line, which only a non-CONNECT HTTP request produces. The sandbox sets no `HTTPS_PROXY`, so there is no CONNECT tunnel.
+- The proxy opens its **own TLS connection upstream** (`https.request` to the upstream host, system CA store). There is no TLS interception, and no CA in the sandbox.
+- Correction to the round-1 note: gateway mode refused the `http://` base URL. OAuth mode has no gateway flag, and Claude Code accepted the `http://` base URL in the dummy-token run.
+- Not injectable through this path: any request Claude Code sends to a host other than `ANTHROPIC_BASE_URL`. The internal network gives those hosts no route (DNS `EAI_AGAIN`, tested in S1 round 1). With `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` the telemetry, updater and feedback calls are off. The dummy-token run reached the base URL only. Unverified: OAuth profile lookups and token refresh, which need a successful response or a real token. The real-token run decides this.
+
+### F8. Dummy-token request log (`CLAUDE_CODE_OAUTH_TOKEN` dummy, no real credential in the sandbox)
+
+Script: `docs/spikes/s1-sandcastle/oauth-dummy-probe.mjs`, recorder: `docs/spikes/s1-sandcastle/credential-proxy/recording-proxy.mjs` (answers 401, forwards nothing). Image rev 3, internal network only, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and no `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` in the sandbox environment (checked in the sandbox: count 0).
+
+- Paths: `POST /v1/messages?beta=true`, twice (one retry after the 401). No other path reached the recorder.
+- Auth-related headers:
+  - `authorization: Bearer dummy-s1-oauth-not-a-credential` (OAuth mode sends the `CLAUDE_CODE_OAUTH_TOKEN` value as a Bearer).
+  - `x-api-key`: absent.
+  - `anthropic-beta`: `oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,claude-code-20250219,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11`.
+  - `anthropic-version: 2023-06-01`; `anthropic-dangerous-direct-browser-access: true`.
+- Other header names: accept, content-type, user-agent, x-claude-code-session-id, x-stainless-arch, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout, x-app, connection, host, accept-encoding, content-length.
+- No gateway header (`x-databricks-*`) is sent in this mode.
+- Debug stderr: only the untrusted-workspace warning, and no DNS or connection error naming a host. This is an inference from absence, since `--debug` printed no host lines in `-p` JSON mode.
+
+Consequence: the proxy must replace `authorization`, drop `x-api-key`, and keep `anthropic-beta`. Nothing else needs replacing. The OAuth proxy mode was unit-tested against a local self-signed upstream on the host (the upstream saw `Bearer <test value>`, `anthropic-beta` kept, `x-api-key` absent, status 200). That test used `NODE_TLS_REJECT_UNAUTHORIZED=0` for the local upstream only.
+
+### F9. Long run (>15 minutes): TODO
+
+TODO(S1 long run): not run. It needs the user's `claude setup-token` file. The script is `docs/spikes/s1-sandcastle/long-run-oauth-test.mjs`: 17 sequential `sleep 60` calls with `Bash(sleep 60)` allowed, the proxy in OAuth mode, a 0600 token file path given as the argument. Record its start and end times, `over_15_minutes`, success, model used, usage and cost here, and say whether the one-year token and the proxy survived the whole run.
+
 ## Unresolved
 
 - **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Not tested beyond one call (F4).
