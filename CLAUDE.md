@@ -12,7 +12,9 @@ lifecycle. Humans shape, spec and accept; sandboxed agents build, check and revi
 3. `docs/adr/` — decisions already made; do not reopen them without a new ADR
 4. `docs/plan/phase-1.md` — current phase: spikes, slices and the phase gate
 
-If guidance conflicts: ADRs win, then the design doc, then existing code.
+The design doc is the source of truth. ADRs record decisions made; change one only with a new ADR, and
+update the design doc in the same change. If guidance conflicts: design doc wins, then ADRs, then the
+phase plan, then existing code.
 
 ## Locked decisions (details in `docs/adr/0001-baseline-architecture.md`)
 
