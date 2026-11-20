@@ -18,7 +18,7 @@ while IFS= read -r -d '' f; do
 done
 
 HASH="$(shasum -a 256 "$CLONE/package-lock.json" | cut -c1-12)"
-IMAGE_REV="${IMAGE_REV:-2}"
+IMAGE_REV="${IMAGE_REV:-3}"
 TAG="factory/coach-stack-node20:${IMAGE_REV}-$HASH"
 START=$(date +%s)
 docker build -t "$TAG" "$CTX"

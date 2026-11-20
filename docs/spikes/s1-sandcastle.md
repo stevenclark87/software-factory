@@ -13,7 +13,7 @@
 | Egress case | **Sandcastle can choose the container network.** `docker({ network })` attaches the container only to the named network. Verified: `docker inspect` lists only the internal network, and an external fetch fails with `EAI_AGAIN`. | Slice 1b attaches the sandbox to the internal network directly. The move-and-disconnect fallback is not needed. The proxy must still be the only route out, which means it is dual-homed (internal network plus a route to the model gateway). That is untested. |
 | Read-only mount | **Supported.** `docker({ mounts: [{ hostPath, sandboxPath, readonly: true }] })`. Reads work; writes fail with `Read-only file system`. | Slice 1 puts the ticket and spec files outside the worktree. The `.factory/` fallback and its diff check are not needed. |
 | `--max-budget-usd` in print mode | **Works in Claude Code 2.1.311** (`error_max_budget_usd`, exit 1). **Sandcastle's `claudeCode()` cannot pass it**, nor `--max-turns` or `--setting-sources`. Passing them needs a custom `AgentProvider` that wraps `claudeCode()` and appends flags (verified in `capped-run-probe.mjs`). The check runs after each API call, so one call can overshoot the budget. | Slice 1b sets `--max-budget-usd` per step, with `--max-turns` as a backstop, through the wrapper. Each step's budget must cover the worst-case first call (see Budget section). |
-| Baseline run numbers | One real `run()` on a scratch branch (Opus 5.5, trivial task): **$0.1801**, **3 API calls**, **14.0 s agent time**, **43.8 s wall including 21.6 s sandbox setup**. Tokens are in the table below. | Baseline for slice 1b defaults. It is a trivial task, so it is a floor, not a ticket-run estimate. Take the tracer-bullet run as the second baseline. |
+| Baseline run numbers | One real `run()` on a scratch branch (Opus 5.5, confirmed from the transcript; trivial task, see F1): **$0.1801**, **3 API calls**, **14.0 s agent time**, **43.8 s wall including 21.6 s sandbox setup**. Tokens are in the table below. | Baseline for slice 1b defaults. It is a trivial task, so it is a floor, not a ticket-run estimate. Take the tracer-bullet run as the second baseline. |
 
 Other decisions, with the plan consequence:
 
@@ -27,7 +27,7 @@ Other decisions, with the plan consequence:
 | Component | Pin | Evidence |
 | --- | --- | --- |
 | Sandcastle | `@ai-hero/sandcastle@0.14.0` (npm `latest`; GitHub tag `v0.14.0`, published 2026-11-02) | `npm view @ai-hero/sandcastle dist-tags` returns `latest: 0.14.0`. Repo `github.com/mattpocock/sandcastle` (MIT). The npm `v1-next` prerelease line is not used. |
-| Claude Code (image and host) | `@anthropic-ai/claude-code@2.1.311` (npm `stable` tag; published 2026-10-26) | `npm view @anthropic-ai/claude-code dist-tags` returns `stable: 2.1.311`. `latest` is 2.1.329, published 2026-11-19, which is under two weeks old, so it was not chosen. |
+| Claude Code (image, rev 3) | Native installer, version `2.1.311`, binary sha256 pinned per arch in the Dockerfile (amd64 `86dc1fcc…`, arm64 `2e2496c9…`). Same version as npm `@anthropic-ai/claude-code@2.1.311` (npm `stable` tag; published 2026-10-26) | `npm view @anthropic-ai/claude-code dist-tags` returns `stable: 2.1.311`. `latest` is 2.1.329, published 2026-11-19, which is under two weeks old, so it was not chosen. |
 | AWS CDK CLI | `aws-cdk@2.1111.0` | Matches `infra/package.json` in coach-stack. |
 | Base image | `node:20-bookworm-slim` (Node 20.20.2, npm 10.8.2, git 2.39.5) | `docker run` output in the image. |
 | Sandcastle source checked | `dist/` of 0.14.0 and `docs/guide/*.md` at tag `v0.14.0` | Read via `npm pack` and `gh api`. |
@@ -167,18 +167,79 @@ Where the numbers come from: `RunResult` does not carry cost. The cost and token
 ## Other findings
 
 1. **Sandcastle's `claudeCode()` is missing the flags the design needs.** It passes `--dangerously-skip-permissions` by default, or `--permission-mode` if `permissionMode` is set. It has no `--max-turns`, `--max-budget-usd`, `--setting-sources`, `--allowedTools` or `--disallowedTools`. The design's `tools.allow`/`deny` cannot be enforced through `run()` options alone. The wrapper in `capped-run-probe.mjs` is the working pattern. It should live behind `ExecutionRunner` and be pinned with the Sandcastle version.
-2. **Workspace trust gates project settings.** Without trust, Claude Code logs `Ignoring 7 permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. The message points at `projects["/home/agent/workspace"].hasTrustDialogAccepted` in `~/.claude.json`. Sandcastle creates `/home/agent` as root, so the write fails until the image pre-creates the directory for uid 1000 (rev 2). The trust hook in the probes writes that flag at sandbox open. The warning no longer appeared in the rev 2 runs. Consequence: slice 1 must decide how trust is set (this is a sandbox-local config write, not a host change). The alternative is to put the allow list on the command line.
-3. **Node 20 vs Claude Code's engines field.** Claude Code 2.1.311 declares `node >=22.0.0`. It ran on Node 20.20.2 here. The design pins Node 20. If a later Claude Code pin needs Node 22, the image changes with it.
+2. **Workspace trust gates project settings.** Without trust, Claude Code logs `Ignoring 7 permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. The message points at `projects["/home/agent/workspace"].hasTrustDialogAccepted` in `~/.claude.json`. Sandcastle creates `/home/agent` as root, so the write fails until the image pre-creates the directory for uid 1000 (rev 2). The trust hook in the probes writes that flag at sandbox open. The warning no longer appeared in the rev 2 runs. Decision (follow-up): factory permissions do not depend on trust. Slice 1 verifies that generated settings and `--allowedTools`/`--disallowedTools` apply without it (F3). The sandbox-local trust write is not used.
+3. **Node 20 vs Claude Code's engines field.** Decision (follow-up): Claude Code is now installed with the native installer, so the engines field no longer applies (rev 3, see F5). Claude Code 2.1.311 declares `node >=22.0.0`. It ran on Node 20.20.2 here. The design pins Node 20. If a later Claude Code pin needs Node 22, the image changes with it.
 4. **Git identity is absent in the container** (`git config --global user.name` is empty). Commits need `GIT_AUTHOR_*` and `GIT_COMMITTER_*` on the agent, or an explicit identity in the factory's commit step.
 5. **Only explicit env reaches the container.** This is good for secret hygiene. It also means every needed variable (gateway URL, headers, token, `COACH_STACK_MEMORY_RUN`) has to be listed in the profile or the runner.
 6. **Image size is 1.28 GB.** The baked cache is 154 MB. The design does not set a size target. A slimmer base would have to be measured.
 7. **Skill and memory hook lines.** The `UserPromptSubmit` skill hook prints "Proceeding without skills" in print mode. In the baseline the agent said it had no skills, even though the tracked `.claude/skills` were present in the clone. This shows that trust and settings sources decide what the agent sees, and the skills check (S2 and 7a) should confirm it under the final settings.
 
+## Follow-ups (second pass, 2026-11-20)
+
+Decisions are recorded in `docs/adr/0003-sandbox-decisions-from-s1.md`. Pre-flight pin used: coach-stack `factory-pilot` at `53f68b2`. The scratch clone was reset to it.
+
+### F1. Baseline model confirmed: Opus 5.5
+
+Evidence from the captured transcript of the baseline run (`~/.claude/projects/-Users-sclark-factory-repos-coach-stack/9e360e7a-*.jsonl`): every `assistant` event has `message.model` = `system.ai.claude-opus-5-5`; every `api-request` event has `params.model` = the same; `cost-state.modelUsage` has that single key. The gateway served Opus. The stream-json `init` event was not captured for this run, so the assistant `message.model` field is the evidence.
+
+Consequence: the $0.18 baseline is an Opus run, but the task was trivial (2 tool calls, 686 output tokens). It is **not representative of a ticket**. Slice 1b limit defaults come from the tracer-bullet run and M1 on the profile's model (`claude-opus-5-5`), not from this run.
+
+### F2. `--setting-sources` rerun (Haiku, `--max-turns 1`, trust not accepted)
+
+Evidence is the stream-json `system`/`init` event, its `hook_started` events, the session transcript's `attachment` events and stderr. Not the model's answers. Script: `docs/spikes/s1-sandcastle/setting-sources-probe.mjs`.
+
+| Case | `init.skills` | `init.agents` | CLAUDE.md loaded (transcript `instructions` attachment) | Hooks run | stderr "Ignoring 7 permissions.allow" |
+| --- | --- | --- | --- | --- | --- |
+| default | 46 names, including project skills (`react`, `tdd`, `add-screen`, ...) | includes project agents (`backend-engineer`, ...) | yes: `/home/agent/workspace/CLAUDE.md` | `SessionStart:startup`, `UserPromptSubmit` | yes |
+| `--setting-sources project` | same as default | same as default | yes, same path | same as default | yes |
+| `--setting-sources local` | 16 names, no project skills (`deep-research`, `dataviz`, ...) | builtin only (`claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`) | **no** (no `instructions` attachment) | **none** | no (project settings not read) |
+
+Findings: `project` keeps CLAUDE.md, project skills, project agents and the project hooks. `local` drops all four, and also the project permissions (the allow entries are not read at all). The `init` event's `memory_paths` only names the auto-memory directory, so CLAUDE.md is evidenced by the `instructions` attachment, not by the init event. Not tested: a user-level source, and whether a `local` run still enforces a deny rule from another source.
+
+### F3. Factory permissions apply without workspace trust
+
+Script: `docs/spikes/s1-sandcastle/permission-probe.mjs`. `--permission-mode default`, trust not accepted, Haiku, `--max-turns 3`, `curl --version` requested.
+
+- A, `--disallowedTools 'Bash(curl *)'`: `tool_result` with `is_error: true` and "Permission to use Bash with command curl --version has been denied."; `result.permission_denials` lists the call.
+- B, `--settings` file with `permissions.deny: ["Bash(curl *)"]`: the same denial.
+
+Decision: permissions come from the generated settings and `--allowedTools`/`--disallowedTools`, not from trust. The wrapper must replace Sandcastle's default `--dangerously-skip-permissions` with an explicit `--permission-mode`.
+
+### F4. Credential-injecting proxy works (dual-homed proxy, internal-only sandbox)
+
+Scripts: `docs/spikes/s1-sandcastle/proxy-probe.mjs` with `credential-proxy/proxy.mjs`. Image rev 3.
+
+- Network `s1-internal` (`--internal`). Proxy container (`node:20-bookworm-slim`, `proxy.mjs` mounted read-only) attached to `s1-internal`, then `bridge` (`docker network connect`). `docker inspect` on the proxy lists `bridge s1-internal`.
+- The real token was written into the proxy's own file `/run/s1/token` by `docker exec -i` over stdin, with umask 077. It was not in any environment variable or command argument. The upstream base URL and the gateway headers are proxy env (not secret).
+- The sandbox: `docker({ network: "s1-internal", env: { ANTHROPIC_BASE_URL: "http://s1-proxy:8080", ANTHROPIC_AUTH_TOKEN: <dummy> } })`. Gateway mode is off (see below).
+- `docker inspect` on the sandbox lists only `s1-internal`. External fetch: `blocked EAI_AGAIN`.
+- `claude -p` (Haiku, one turn) through the proxy: `subtype: success`, `result: "OK"`, cost `$0.0025`. Proxy log: `POST /v1/messages?beta=true -> 200`.
+- `docker inspect` on the sandbox: its env contains the dummy value and does **not** contain the real token. The proxy's inspect also does not contain it.
+
+Gateway mode (`CLAUDE_CODE_USE_GATEWAY=1`) refused the plain-HTTP proxy URL ("Gateway URL must use https://"). With gateway mode off, Claude Code uses the http proxy URL and works. The proxy is on a private network, so the sandbox-to-proxy hop is not public. TLS to the proxy is an alternative if a reviewer wants it.
+
+Result: **the proxy approach works for a trivial run.** Slice 1b uses it. It does not remove the refresh problem, it moves it: the proxy's token is minted on the host (15-minute helper TTL), so the worker must rewrite the proxy's token file before it expires. That refresh is not tested beyond the single call. The allowlist itself is not built (slice 1b).
+
+### F5. Native installer, rebuild as rev 3
+
+- `Dockerfile` (rev 3): Claude Code installed with `https://claude.ai/install.sh` run with `HOME=/opt/claude` and the pinned version `2.1.311`. The binary's sha256 is checked against the pinned checksum for the architecture (`CLAUDE_CODE_SHA256_AMD64` `86dc1fcc...`, `CLAUDE_CODE_SHA256_ARM64` `2e2496c9...`), taken from `https://downloads.claude.ai/claude-code-releases/2.1.311/manifest.json`. `DISABLE_AUTOUPDATER=1`. The manifest's `manifestSignatureEnforcement` reads `flag`, so the pinned sha256 in the Dockerfile is the control.
+- Node stays 20.20.2. Claude Code no longer comes from npm, so there is no `EBADENGINE` warning.
+- Build: **29 s** (layers cached except the Claude Code install), image **1,281,206,262 bytes**. Build-time `sha256sum -c` passed. In the image: `claude --version` 2.1.311, `cdk` 2.1111.0, `git` 2.39.5, uid 1000. A bare `claude -p` with no credential prints "Not logged in", as expected; the authenticated run through the proxy used this image.
+- Tag: `factory/coach-stack-node20:3-2a0ca7eeaa5e`.
+- To bump Claude Code: change the version and both checksums from the new release's manifest, then rebuild. A mismatch fails the build.
+
+### F6. Status of earlier items
+
+- Node engines field: resolved by the native installer (F5). The Node 20 end-of-life upgrade is a separate coach-stack ticket.
+- Workspace trust: not relied on; permissions verified without it (F3).
+- Budget: the step limit is the remaining ticket budget minus about one call. It is a one-call overshoot limit, not a hard cap.
+- Model: Opus 5.5 confirmed (F1).
+
 ## Unresolved
 
-- **Token lifetime for runs longer than the helper TTL (15 min).** Not tested. A ticket run's agent step can exceed that. The factory needs either a refresh hook inside the sandbox (not possible without the host helper) or a longer-lived token that the design allows. This is plan-relevant for slice 1b.
-- **Dual-homed proxy.** The egress case is answered (the internal network works), but the proxy itself has not been built or tested. The model gateway is not reachable from the internal network alone.
-- **`--setting-sources` against hooks and permissions.** Only the context files and skills were tested. Whether `local` also drops `.claude/settings.json` hooks and permissions is inferred, not measured.
+- **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Not tested beyond one call (F4).
+- **Allowlist and dual-homed hardening.** The dual-homed proxy works for one trivial call (F4). The allowlisting proxy, the TLS question, and whether the proxy blocks other egress are slice 1b work.
+- **`--setting-sources local` and a deny rule from another source.** Hooks, skills, agents and CLAUDE.md dropped in F2; whether `local` still enforces a deny rule from another source was not tested.
 - **Context inventory relied on Haiku's self-report.** Yes or no answers are a weak check. The memory hook output size (3,499 bytes versus 0) is the stronger evidence for section 6.
 - **Budget overshoot size on Opus.** The first-call overshoot was measured on Haiku ($0.0023) and estimated for Opus. A per-step budget should be set from measured first-call costs on the profile's model.
 - **Performance on macOS bind mounts.** `npm ci` on a bind-mounted worktree took 20 s; a large repo or heavier tests were not measured.
