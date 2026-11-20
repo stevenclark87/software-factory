@@ -1,0 +1,29 @@
+{
+  "name": "@software-factory/s3-temporal-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "S3 spike: Temporal TypeScript hello world (one workflow, one activity, one signal, one query)",
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "worker": "node dist/worker.js",
+    "client": "node dist/client.js",
+    "replay": "node dist/replay.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@temporalio/activity": "1.26.0",
+    "@temporalio/client": "1.26.0",
+    "@temporalio/common": "1.26.0",
+    "@temporalio/worker": "1.26.0",
+    "@temporalio/workflow": "1.26.0"
+  },
+  "devDependencies": {
+    "@temporalio/testing": "1.26.0",
+    "@types/node": "20.19.43",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  }
+}
