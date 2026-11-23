@@ -74,7 +74,7 @@ Only the worker talks to GitHub and to the runner; sandboxes read knowledge but 
 | Knowledge | Target-repo skills, repo docs (AGENTS.md, ADRs, `docs/knowledge/`), GitHub Issues, run artifacts | Skills committed to coach-stack and pinned by `skills-lock.json` (a separate skills repo is deferred); OKF bundle injected read-only; transcripts stored per run |
 | Governance | Sandbox policy, secrets broker, model allowlist, telemetry, audit | Policy file per profile; env injection at run start; JSONL event log, exportable to the Databricks pipeline |
 
-**Local topology.** Four processes on one laptop: the Next.js app, `temporal server start-dev`, the factory worker, and Docker Desktop. The factory owns a clone of each managed repo under `~/factory/repos/<repo>`; Sandcastle creates a worktree and container per ticket from that clone.
+**Local topology.** Four processes on one laptop: the Next.js app, `temporal server start-dev`, the factory worker, and Docker Desktop. The factory owns a clone of each managed repo under the factory home directory (`$FACTORY_HOME/repos/<repo>`; on the pilot laptop, `Software_Factory_Test/factory/`, next to the project repos rather than in the user's home directory); Sandcastle creates a worktree and container per ticket from that clone.
 
 **Path to cloud.** The same worker code starts on AWS hosts listening on the `sandbox-runners` task queue, and the engine points at Origami's Temporal in a dedicated namespace. Workflow definitions, the UI and profiles do not change.
 

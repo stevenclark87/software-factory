@@ -3,7 +3,7 @@
 - Date: 2026-11-20. Spike owner: S1 agent. Plan: `docs/plan/phase-1.md` (Spikes, S1). Design: `docs/design/factory-design.md`.
 - Worktree and branch: `software-factory-s1` on `spike/s1-sandcastle` (not pushed).
 - Artifacts: `docs/spikes/s1-sandcastle/` (Dockerfile, `build-image.sh`, spike harness scripts, pinned `package.json` and lockfile).
-- Target: a scratch clone of coach-stack at `~/factory/repos/coach-stack` (branch `factory-pilot`, HEAD `116af4f`). coach-stack's working tree was not touched.
+- Target: a scratch clone of coach-stack at `Software_Factory_Test/factory/repos/coach-stack` (moved from `~/factory/` on 2026-11-23) (branch `factory-pilot`, HEAD `116af4f`). coach-stack's working tree was not touched.
 - Pre-flight skills commit: not on factory-pilot when this ran (HEAD `116af4f`; no commit adds `.agents/skills/`, `.claude/skills/` symlinks or `skills-lock.json` changes). The scratch clone therefore uses the skills already tracked at HEAD (`.claude/skills/*` regular files, plus two symlinks `knock-cli` and `notification-best-practices`). Re-run the `--setting-sources` probe after the pre-flight commit lands.
 
 ## Decisions at a glance
@@ -137,7 +137,7 @@ Result: Sandcastle lets us choose the container's network. Slice 1b does not nee
 - `cat /mnt/ticket/ticket.md` returned the fixture.
 - `touch /mnt/ticket/x` returned `Read-only file system`.
 
-Result: supported. The fixture is a harmless file under `~/factory/spike-s1/ro-fixture/`, not in any repo.
+Result: supported. The fixture is a harmless file under `Software_Factory_Test/factory/spike-s1/ro-fixture/`, not in any repo.
 
 ### 10. `--max-budget-usd` in print mode
 
@@ -281,8 +281,8 @@ docker info                                                    # daemon up after
 npm view @ai-hero/sandcastle dist-tags ; npm pack @ai-hero/sandcastle@0.14.0
 gh api repos/mattpocock/sandcastle/contents/docs/guide/<page>.md
 git -C <root>/software-factory worktree add ../software-factory-s1 -b spike/s1-sandcastle
-git clone --branch factory-pilot <root>/coach-stack ~/factory/repos/coach-stack
-docs/spikes/s1-sandcastle/build-image.sh ~/factory/repos/coach-stack          # rev 1, then rev 2
+git clone --branch factory-pilot <root>/coach-stack <Software_Factory_Test>/factory/repos/coach-stack
+docs/spikes/s1-sandcastle/build-image.sh <Software_Factory_Test>/factory/repos/coach-stack          # rev 1, then rev 2
 node probe.mjs ... ; node model-probe.mjs ... ; node hook-probe.mjs ...        # token from `ug auth-token`, set in-process only
 node egress-probe.mjs ... (with docker network create --internal)
 node capped-run-probe.mjs ... 0.0001 ; node baseline-run.mjs ...

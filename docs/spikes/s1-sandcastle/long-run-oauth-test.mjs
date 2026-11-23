@@ -11,7 +11,7 @@
 // with Bash allowed explicitly through --allowedTools and default permission mode (no bypass).
 //
 // Usage: node long-run-oauth-test.mjs <clone> <image> <branch> <token-file> <outdir> [model]
-//   <clone>  a coach-stack clone (e.g. ~/factory/repos/coach-stack)
+//   <clone>  a coach-stack clone (e.g. <Software_Factory_Test>/factory/repos/coach-stack)
 //   <image>  the sandbox image tag (factory/coach-stack-node20:3-...)
 //   <branch> a fresh scratch branch name in the clone
 //   <token-file> host path to the 0600 file holding the subscription token
