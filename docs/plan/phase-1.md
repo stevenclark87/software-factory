@@ -98,10 +98,11 @@ fan-out.
    - **Egress proxy (required).** An allowlisting forward proxy (`HTTPS_PROXY`; allowlist = model API
      only) with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. The sandbox attaches only to an `--internal`
      Docker network (S1: Sandcastle can choose the network), and the proxy, dual-homed, is its only way out.
-     The proxy also holds the model credential and adds it upstream; the sandbox holds a dummy value (S1
-     proof). No S2-generated ticket runs without the proxy.
+     The proxy also holds the subscription credential (a 0600 host file, outside the repo and the image) and adds
+     it upstream as `Bearer`; the sandbox holds a dummy `CLAUDE_CODE_OAUTH_TOKEN` (ADR 0004). The sandbox-to-proxy
+     hop is plain HTTP on the internal network; the proxy opens TLS upstream. No S2-generated ticket runs without the proxy.
    - The event log: a JSONL writer and the first events (`run.started`, `check.result`, `run.completed`).
-     `run.completed` carries tokens, cost and the ticket's `size:*` label, or `unsized` when there is none.
+     `run.completed` carries tokens, `costUsdApiEquivalent` and the ticket's `size:*` label, or `unsized` when there is none.
    - Ticket-run transcripts are kept as run memory.
    - Per-attempt checkpoint: the worker commits the ticket branch at the end of every attempt in the
      factory's local clone, so a sandbox is disposable. After a worker restart the ticket workflow reopens
@@ -126,7 +127,7 @@ fan-out.
    `.factory/`. Adds the CLI `factory resume` command: it sends the `resume` signal with an `action` and an
    optional note passed to the next attempt, and the retry counter resets. `retry` reruns in the same warm
    sandbox; `restart` opens a fresh sandbox from the current integration branch head, fetches the ticket
-   and spec again, and discards the ticket branch; `abandon` closes the ticket as not done. *Blocked by 1b.*
+   and spec again, and discards the ticket branch; `abandon` closes the ticket as not done. A subscription usage limit pauses the ticket and resumes it later; it is not an attempt and does not escalate (ADR 0004). Detection is defined here, not in S1. *Blocked by 1b.*
 3. **Reviewer step.** Fresh-session `code-review` with `standards` and `spec` rubrics; rejection feeds the
    retry loop. The reviewer gets the same ticket and spec files as the implementer. The `standards` rubric
    reads coach-stack's own AGENTS.md and docs from the worktree. The review diff base is the merge-base
@@ -200,4 +201,4 @@ fan-out.
 UI, JSON interpreter for arbitrary definitions (a hard-coded build lifecycle is fine), workflow editor,
 Learn stage, second harness, feature-doc automation, gate nodes and the `gateDecision` signal, path-based
 profile selection, the `api`, `infra` and `ai-feature` profiles, per-size token caps and a per-feature
-budget, automatic attribution of Integrate failures to a ticket.
+budget, automatic attribution of Integrate failures to a ticket, and the Phase 4 Commercial Terms credential (an API key, Bedrock or Vertex; ADR 0004).

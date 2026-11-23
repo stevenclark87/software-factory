@@ -3,7 +3,7 @@
 - Date: 2026-11-20. Spike owner: S1 agent. Plan: `docs/plan/phase-1.md` (Spikes, S1). Design: `docs/design/factory-design.md`.
 - Worktree and branch: `software-factory-s1` on `spike/s1-sandcastle` (not pushed).
 - Artifacts: `docs/spikes/s1-sandcastle/` (Dockerfile, `build-image.sh`, spike harness scripts, pinned `package.json` and lockfile).
-- Target: a scratch clone of coach-stack at `~/factory/repos/coach-stack` (branch `factory-pilot`, HEAD `116af4f`). coach-stack's working tree was not touched.
+- Target: a scratch clone of coach-stack at `Software_Factory_Test/factory/repos/coach-stack` (moved from `~/factory/` on 2026-11-23) (branch `factory-pilot`, HEAD `116af4f`). coach-stack's working tree was not touched.
 - Pre-flight skills commit: not on factory-pilot when this ran (HEAD `116af4f`; no commit adds `.agents/skills/`, `.claude/skills/` symlinks or `skills-lock.json` changes). The scratch clone therefore uses the skills already tracked at HEAD (`.claude/skills/*` regular files, plus two symlinks `knock-cli` and `notification-best-practices`). Re-run the `--setting-sources` probe after the pre-flight commit lands.
 
 ## Decisions at a glance
@@ -137,7 +137,7 @@ Result: Sandcastle lets us choose the container's network. Slice 1b does not nee
 - `cat /mnt/ticket/ticket.md` returned the fixture.
 - `touch /mnt/ticket/x` returned `Read-only file system`.
 
-Result: supported. The fixture is a harmless file under `~/factory/spike-s1/ro-fixture/`, not in any repo.
+Result: supported. The fixture is a harmless file under `Software_Factory_Test/factory/spike-s1/ro-fixture/`, not in any repo.
 
 ### 10. `--max-budget-usd` in print mode
 
@@ -235,9 +235,59 @@ Result: **the proxy approach works for a trivial run.** Slice 1b uses it. It doe
 - Budget: the step limit is the remaining ticket budget minus about one call. It is a one-call overshoot limit, not a hard cap.
 - Model: Opus 5.5 confirmed (F1).
 
+### F7. How the credential reaches HTTPS traffic (round 3, subscription credential)
+
+Answer, from the proxy code and the probes:
+
+- The sandbox speaks **plain HTTP** to the proxy. `ANTHROPIC_BASE_URL=http://<proxy>:8080` on the internal Docker network. The recorder logged the request as a plain `POST /v1/messages?beta=true` request line, which only a non-CONNECT HTTP request produces. The sandbox sets no `HTTPS_PROXY`, so there is no CONNECT tunnel.
+- The proxy opens its **own TLS connection upstream** (`https.request` to the upstream host, system CA store). There is no TLS interception, and no CA in the sandbox.
+- Correction to the round-1 note: gateway mode refused the `http://` base URL. OAuth mode has no gateway flag, and Claude Code accepted the `http://` base URL in the dummy-token run.
+- Not injectable through this path: any request Claude Code sends to a host other than `ANTHROPIC_BASE_URL`. The internal network gives those hosts no route (DNS `EAI_AGAIN`, tested in S1 round 1). With `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` the telemetry, updater and feedback calls are off. The dummy-token run reached the base URL only. Unverified: OAuth profile lookups and token refresh, which need a successful response or a real token. The real-token run decides this.
+
+### F8. Dummy-token request log (`CLAUDE_CODE_OAUTH_TOKEN` dummy, no real credential in the sandbox)
+
+Script: `docs/spikes/s1-sandcastle/oauth-dummy-probe.mjs`, recorder: `docs/spikes/s1-sandcastle/credential-proxy/recording-proxy.mjs` (answers 401, forwards nothing). Image rev 3, internal network only, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and no `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` in the sandbox environment (checked in the sandbox: count 0).
+
+- Paths: `POST /v1/messages?beta=true`, twice (one retry after the 401). No other path reached the recorder.
+- Auth-related headers:
+  - `authorization: Bearer dummy-s1-oauth-not-a-credential` (OAuth mode sends the `CLAUDE_CODE_OAUTH_TOKEN` value as a Bearer).
+  - `x-api-key`: absent.
+  - `anthropic-beta`: `oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,claude-code-20250219,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11`.
+  - `anthropic-version: 2023-06-01`; `anthropic-dangerous-direct-browser-access: true`.
+- Other header names: accept, content-type, user-agent, x-claude-code-session-id, x-stainless-arch, x-stainless-lang, x-stainless-os, x-stainless-package-version, x-stainless-retry-count, x-stainless-runtime, x-stainless-runtime-version, x-stainless-timeout, x-app, connection, host, accept-encoding, content-length.
+- No gateway header (`x-databricks-*`) is sent in this mode.
+- Debug stderr: only the untrusted-workspace warning, and no DNS or connection error naming a host. This is an inference from absence, since `--debug` printed no host lines in `-p` JSON mode.
+
+Consequence: the proxy must replace `authorization`, drop `x-api-key`, and keep `anthropic-beta`. Nothing else needs replacing. The OAuth proxy mode was unit-tested against a local self-signed upstream on the host (the upstream saw `Bearer <test value>`, `anthropic-beta` kept, `x-api-key` absent, status 200). That test used `NODE_TLS_REJECT_UNAUTHORIZED=0` for the local upstream only.
+
+### F9. Long run (>15 minutes): host-spaced, passed
+
+Two attempts. The first (one sleep inside one turn, 2026-11-23 19:35) stopped at its first Bash call: the agent's Bash tool blocked a standalone `sleep 60`, so 0 of 17 calls ran. That was a test-design failure, not a credential failure. Its output is in `factory/spike-s1/long-run/`.
+
+The second, the one that counts (2026-11-23, 19:38 to 20:00): `docs/spikes/s1-sandcastle/long-run-spaced-test.mjs`. The host waits between calls with `setTimeout`, so the agent never sleeps. All four calls ran in ONE sandbox, which stayed up for the whole test. The OAuth-mode proxy and the internal network stayed up too. The token came from a 0600 file outside the repo, and it was never printed.
+
+| Call | Scheduled (min from call 1) | Started (UTC) | Kind | Subtype | Model | Output tokens | Cache create / read | API-equivalent cost | Upstream statuses | 401/403 | Sandbox stderr errors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 19:38:33.7 | fresh | success | claude-haiku-5-5 | 39 | 17348 / 13741 | $0.00363 | 200 | 0 | 0 |
+| 2 | 8 | 19:46:33.8 | fresh | success | claude-haiku-5-5 | 5 | 17348 / 13741 | $0.00361 | 200 | 0 | 0 |
+| 3 | 16 | 19:54:33.8 | **resume of call 1** | success | claude-haiku-5-5 | 5 | 565 / 31089 | $0.00405 | 200 | 0 | 0 |
+| 4 | 20 | 19:58:33.8 | fresh | success | claude-haiku-5-5 | 6 | 17349 / 13741 | $0.00361 | 200 | 0 | 0 |
+
+- Every call returned its expected word (ONE, TWO, THREE, FOUR). Calls 3 and 4 were past 15 minutes, and all of them succeeded.
+- Call 3 resumed call 1's `session_id` (`ee6791a7-…`). The cache-read count (31089) and the small cache write (565) show the earlier context was loaded. Resume works in a container that stays up. It did not need a new sandbox.
+- Cost figures are API-equivalent (ADR 0004), not spend.
+
+Proxy log (`factory/spike-s1/long-run/proxy-requests.log`, saved before cleanup): four lines, all `oauth POST /v1/messages?beta=true host=api.anthropic.com -> 200`. Distinct hosts: one (`api.anthropic.com`). Distinct paths: one (`/v1/messages?beta=true`). No 401, 403, or upstream error. The log records paths, hosts and statuses only, with no header values.
+
+Other hosts: none visible. The proxy log shows only the upstream host. The sandbox stderr of each call had zero DNS, connection or auth error lines. That is absence of evidence from the logs, not a network trace. A bearer-token call to a non-base host would fail on the internal network and show as a stderr error. None did.
+
+Token scan (counts only, comparing against the file's contents inside a script): the long-run output dir (15 files) had 0 matches for the full token, the first 24 characters, or the last 24 characters. The worktree (82 files) had 0 matches.
+
+Result: the one-year setup-token and the OAuth-mode proxy kept working for more than 15 minutes, and a resumed session worked at t=16. The >15-minute TODO is closed.
+
 ## Unresolved
 
-- **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Not tested beyond one call (F4).
+- **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Tested for 20 minutes with four host-spaced calls, one resumed (F9).
 - **Allowlist and dual-homed hardening.** The dual-homed proxy works for one trivial call (F4). The allowlisting proxy, the TLS question, and whether the proxy blocks other egress are slice 1b work.
 - **`--setting-sources local` and a deny rule from another source.** Hooks, skills, agents and CLAUDE.md dropped in F2; whether `local` still enforces a deny rule from another source was not tested.
 - **Context inventory relied on Haiku's self-report.** Yes or no answers are a weak check. The memory hook output size (3,499 bytes versus 0) is the stronger evidence for section 6.
@@ -252,8 +302,8 @@ docker info                                                    # daemon up after
 npm view @ai-hero/sandcastle dist-tags ; npm pack @ai-hero/sandcastle@0.14.0
 gh api repos/mattpocock/sandcastle/contents/docs/guide/<page>.md
 git -C <root>/software-factory worktree add ../software-factory-s1 -b spike/s1-sandcastle
-git clone --branch factory-pilot <root>/coach-stack ~/factory/repos/coach-stack
-docs/spikes/s1-sandcastle/build-image.sh ~/factory/repos/coach-stack          # rev 1, then rev 2
+git clone --branch factory-pilot <root>/coach-stack <Software_Factory_Test>/factory/repos/coach-stack
+docs/spikes/s1-sandcastle/build-image.sh <Software_Factory_Test>/factory/repos/coach-stack          # rev 1, then rev 2
 node probe.mjs ... ; node model-probe.mjs ... ; node hook-probe.mjs ...        # token from `ug auth-token`, set in-process only
 node egress-probe.mjs ... (with docker network create --internal)
 node capped-run-probe.mjs ... 0.0001 ; node baseline-run.mjs ...

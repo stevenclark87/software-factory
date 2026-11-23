@@ -29,6 +29,7 @@ The user has decided the open points. This ADR records them. ADR 0001's locked d
    the sandbox at the proxy. The sandbox holds a dummy value. The proxy adds the real credential and the
    gateway's headers and forwards upstream. The proxy is the only route out. The S1 proxy test confirmed
    this path for a trivial run (`docs/spikes/s1-sandcastle.md`, follow-up F4).
+   *Superseded by ADR 0004 (subscription credential via setup-token).*
 4. **Per-step budget.** Each agent step gets `--max-budget-usd` set to the ticket run's remaining budget minus
    about one call, with `--max-turns` kept as the backstop. The budget check runs after each API call, so a
    step can exceed it by one call. The flags are passed through a `ClaudeCodeAdapter` wrapper, because
