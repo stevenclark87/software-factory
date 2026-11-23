@@ -46,13 +46,13 @@ http.createServer((req, res) => {
   const up = https.request(
     { hostname: UP.hostname, port: UP.port || 443, path, method: req.method, headers },
     (ur) => {
-      log(MODE, req.method, req.url, "->", ur.statusCode);
+      log(MODE, req.method, req.url, "host=" + UP.hostname, "->", ur.statusCode);
       res.writeHead(ur.statusCode, ur.headers);
       ur.pipe(res);
     },
   );
   up.on("error", (e) => {
-    log(MODE, req.method, req.url, "upstream error", e.code || e.message);
+    log(MODE, req.method, req.url, "host=" + UP.hostname, "upstream error", e.code || e.message);
     if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
     res.end(`upstream ${e.code || "error"}\n`);
   });

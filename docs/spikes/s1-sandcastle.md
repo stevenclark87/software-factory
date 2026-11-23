@@ -260,34 +260,34 @@ Script: `docs/spikes/s1-sandcastle/oauth-dummy-probe.mjs`, recorder: `docs/spike
 
 Consequence: the proxy must replace `authorization`, drop `x-api-key`, and keep `anthropic-beta`. Nothing else needs replacing. The OAuth proxy mode was unit-tested against a local self-signed upstream on the host (the upstream saw `Bearer <test value>`, `anthropic-beta` kept, `x-api-key` absent, status 200). That test used `NODE_TLS_REJECT_UNAUTHORIZED=0` for the local upstream only.
 
-### F9. Long run (>15 minutes): attempt stopped at the first Bash call (TODO(S1 long run) stays open)
+### F9. Long run (>15 minutes): host-spaced, passed
 
-Run on 2026-11-23 with `docs/spikes/s1-sandcastle/long-run-oauth-test.mjs`, image rev 3, scratch clone at the pinned pre-flight commit, branch `spike/s1-oauth-long`. The token file was passed by path (mode 0600, outside the repo, outside the image). The token was never printed. Output: `factory/spike-s1/long-run/` (outside the repo).
+Two attempts. The first (one sleep inside one turn, 2026-11-23 19:35) stopped at its first Bash call: the agent's Bash tool blocked a standalone `sleep 60`, so 0 of 17 calls ran. That was a test-design failure, not a credential failure. Its output is in `factory/spike-s1/long-run/`.
 
-Summary JSON (`long-run-summary.json`):
+The second, the one that counts (2026-11-23, 19:38 to 20:00): `docs/spikes/s1-sandcastle/long-run-spaced-test.mjs`. The host waits between calls with `setTimeout`, so the agent never sleeps. All four calls ran in ONE sandbox, which stayed up for the whole test. The OAuth-mode proxy and the internal network stayed up too. The token came from a 0600 file outside the repo, and it was never printed.
 
-- `started_at` 2026-11-23T19:35:05.220Z, `ended_at` 2026-11-23T19:35:31.685Z, `wall_minutes` 0.44, `over_15_minutes` false.
-- `exit` 0, `success` true, `subtype` `success`, `num_turns` 2, `duration_ms` 4605.
-- `model_used` `claude-haiku-5-5`. The alias `haiku` resolved to this id. The full-id retry was not needed.
-- `usage`: input 4, output 625, cache creation 31398, cache read 31147.
-- `total_cost_usd` 0.00690397 (API-equivalent, per ADR 0004).
-- Proxy: `proxy_upstream_200s` 2, `proxy_upstream_non_200` none. No 401 or 403.
+| Call | Scheduled (min from call 1) | Started (UTC) | Kind | Subtype | Model | Output tokens | Cache create / read | API-equivalent cost | Upstream statuses | 401/403 | Sandbox stderr errors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0 | 19:38:33.7 | fresh | success | claude-haiku-5-5 | 39 | 17348 / 13741 | $0.00363 | 200 | 0 | 0 |
+| 2 | 8 | 19:46:33.8 | fresh | success | claude-haiku-5-5 | 5 | 17348 / 13741 | $0.00361 | 200 | 0 | 0 |
+| 3 | 16 | 19:54:33.8 | **resume of call 1** | success | claude-haiku-5-5 | 5 | 565 / 31089 | $0.00405 | 200 | 0 | 0 |
+| 4 | 20 | 19:58:33.8 | fresh | success | claude-haiku-5-5 | 6 | 17349 / 13741 | $0.00361 | 200 | 0 | 0 |
 
-What the run shows: the subscription token worked through the OAuth-mode proxy. The sandbox held only the dummy `CLAUDE_CODE_OAUTH_TOKEN`, and the two upstream requests returned 200 from api.anthropic.com.
+- Every call returned its expected word (ONE, TWO, THREE, FOUR). Calls 3 and 4 were past 15 minutes, and all of them succeeded.
+- Call 3 resumed call 1's `session_id` (`ee6791a7-…`). The cache-read count (31089) and the small cache write (565) show the earlier context was loaded. Resume works in a container that stays up. It did not need a new sandbox.
+- Cost figures are API-equivalent (ADR 0004), not spend.
 
-What the run does not show: the >15-minute duration. Claude Code's Bash tool blocked the standalone `sleep 60` call (the harness told it to use Monitor or `run_in_background` and to stop rather than chain shorter sleeps). The agent made zero of the 17 calls, and its reply said "DONE is not possible yet". This is a test-design failure, not a credential or Docker failure. The one-year token and the proxy did not get tested over 15 minutes.
+Proxy log (`factory/spike-s1/long-run/proxy-requests.log`, saved before cleanup): four lines, all `oauth POST /v1/messages?beta=true host=api.anthropic.com -> 200`. Distinct hosts: one (`api.anthropic.com`). Distinct paths: one (`/v1/messages?beta=true`). No 401, 403, or upstream error. The log records paths, hosts and statuses only, with no header values.
 
-Other hosts: the agent's stderr showed only the untrusted-workspace warning, with no DNS or connection errors. The proxy's non-200 list was empty. The proxy container's full log was not saved (the script removes it), so the request paths are not recorded beyond the two 200s. This is evidence from absence in a short run, not a network trace.
+Other hosts: none visible. The proxy log shows only the upstream host. The sandbox stderr of each call had zero DNS, connection or auth error lines. That is absence of evidence from the logs, not a network trace. A bearer-token call to a non-base host would fail on the internal network and show as a stderr error. None did.
 
-Token scan (counts only, file contents compared inside a script): no match for the full token, the first 24 characters, or the last 24 characters, in the long-run output directory (4 files) or in the worktree (81 files).
+Token scan (counts only, comparing against the file's contents inside a script): the long-run output dir (15 files) had 0 matches for the full token, the first 24 characters, or the last 24 characters. The worktree (82 files) had 0 matches.
 
-Next step (not run): replace the blocked `sleep 60` with a wait the harness accepts (for example a background wait the Bash tool allows, or an allowed `node -e` timer), keep the 17-call structure and the 15-minute threshold, and save the proxy log to the output directory before the container is removed. Pending the user's go-ahead on which wait to use. Re-run and replace this section.
-
-TODO(S1 long run): the >15-minute run is still outstanding. This TODO stays open until a run completes.
+Result: the one-year setup-token and the OAuth-mode proxy kept working for more than 15 minutes, and a resumed session worked at t=16. The >15-minute TODO is closed.
 
 ## Unresolved
 
-- **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Not tested beyond one call (F4).
+- **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Tested for 20 minutes with four host-spaced calls, one resumed (F9).
 - **Allowlist and dual-homed hardening.** The dual-homed proxy works for one trivial call (F4). The allowlisting proxy, the TLS question, and whether the proxy blocks other egress are slice 1b work.
 - **`--setting-sources local` and a deny rule from another source.** Hooks, skills, agents and CLAUDE.md dropped in F2; whether `local` still enforces a deny rule from another source was not tested.
 - **Context inventory relied on Haiku's self-report.** Yes or no answers are a weak check. The memory hook output size (3,499 bytes versus 0) is the stronger evidence for section 6.
