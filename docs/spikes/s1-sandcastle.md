@@ -260,9 +260,30 @@ Script: `docs/spikes/s1-sandcastle/oauth-dummy-probe.mjs`, recorder: `docs/spike
 
 Consequence: the proxy must replace `authorization`, drop `x-api-key`, and keep `anthropic-beta`. Nothing else needs replacing. The OAuth proxy mode was unit-tested against a local self-signed upstream on the host (the upstream saw `Bearer <test value>`, `anthropic-beta` kept, `x-api-key` absent, status 200). That test used `NODE_TLS_REJECT_UNAUTHORIZED=0` for the local upstream only.
 
-### F9. Long run (>15 minutes): TODO
+### F9. Long run (>15 minutes): attempt stopped at the first Bash call (TODO(S1 long run) stays open)
 
-TODO(S1 long run): not run. It needs the user's `claude setup-token` file. The script is `docs/spikes/s1-sandcastle/long-run-oauth-test.mjs`: 17 sequential `sleep 60` calls with `Bash(sleep 60)` allowed, the proxy in OAuth mode, a 0600 token file path given as the argument. Record its start and end times, `over_15_minutes`, success, model used, usage and cost here, and say whether the one-year token and the proxy survived the whole run.
+Run on 2026-11-23 with `docs/spikes/s1-sandcastle/long-run-oauth-test.mjs`, image rev 3, scratch clone at the pinned pre-flight commit, branch `spike/s1-oauth-long`. The token file was passed by path (mode 0600, outside the repo, outside the image). The token was never printed. Output: `factory/spike-s1/long-run/` (outside the repo).
+
+Summary JSON (`long-run-summary.json`):
+
+- `started_at` 2026-11-23T19:35:05.220Z, `ended_at` 2026-11-23T19:35:31.685Z, `wall_minutes` 0.44, `over_15_minutes` false.
+- `exit` 0, `success` true, `subtype` `success`, `num_turns` 2, `duration_ms` 4605.
+- `model_used` `claude-haiku-5-5`. The alias `haiku` resolved to this id. The full-id retry was not needed.
+- `usage`: input 4, output 625, cache creation 31398, cache read 31147.
+- `total_cost_usd` 0.00690397 (API-equivalent, per ADR 0004).
+- Proxy: `proxy_upstream_200s` 2, `proxy_upstream_non_200` none. No 401 or 403.
+
+What the run shows: the subscription token worked through the OAuth-mode proxy. The sandbox held only the dummy `CLAUDE_CODE_OAUTH_TOKEN`, and the two upstream requests returned 200 from api.anthropic.com.
+
+What the run does not show: the >15-minute duration. Claude Code's Bash tool blocked the standalone `sleep 60` call (the harness told it to use Monitor or `run_in_background` and to stop rather than chain shorter sleeps). The agent made zero of the 17 calls, and its reply said "DONE is not possible yet". This is a test-design failure, not a credential or Docker failure. The one-year token and the proxy did not get tested over 15 minutes.
+
+Other hosts: the agent's stderr showed only the untrusted-workspace warning, with no DNS or connection errors. The proxy's non-200 list was empty. The proxy container's full log was not saved (the script removes it), so the request paths are not recorded beyond the two 200s. This is evidence from absence in a short run, not a network trace.
+
+Token scan (counts only, file contents compared inside a script): no match for the full token, the first 24 characters, or the last 24 characters, in the long-run output directory (4 files) or in the worktree (81 files).
+
+Next step (not run): replace the blocked `sleep 60` with a wait the harness accepts (for example a background wait the Bash tool allows, or an allowed `node -e` timer), keep the 17-call structure and the 15-minute threshold, and save the proxy log to the output directory before the container is removed. Pending the user's go-ahead on which wait to use. Re-run and replace this section.
+
+TODO(S1 long run): the >15-minute run is still outstanding. This TODO stays open until a run completes.
 
 ## Unresolved
 

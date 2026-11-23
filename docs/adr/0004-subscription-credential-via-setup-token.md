@@ -26,7 +26,10 @@ that means for the sandbox:
    `claude setup-token` on the host and replaces the host file. The factory does not mint or refresh it.
    - TODO(S1 long run): the >15-minute run is the test that confirms a setup-token survives beyond the
      15-minute helper window and that the proxy keeps working for the whole run. Fill in the result here and in
-     `docs/spikes/s1-sandcastle.md` after the run. The run has not happened yet.
+     `docs/spikes/s1-sandcastle.md` after the run. Attempt on 2026-11-23 (F9): the one-year setup-token
+     authenticated through the OAuth-mode proxy (two upstream 200s from api.anthropic.com), and the run stopped
+     at its first Bash call because the harness blocked a standalone `sleep 60`. The >15-minute result is still
+     outstanding and this TODO stays open until a run completes.
 2. **Proxy injection is required, not optional, because the token lasts a year.** The sandbox holds only a
    dummy `CLAUDE_CODE_OAUTH_TOKEN`, set through env at run start. The proxy reads the real token from a host
    file (mode 0600, outside the repo and outside the image). On each request it replaces `authorization` with
@@ -38,10 +41,12 @@ that means for the sandbox:
    connection to the upstream host, using the system CA store. There is no CONNECT tunnel, no TLS
    interception and no CA in the sandbox. The S1 round 3 unit test and dummy-token run confirmed this path
    (`docs/spikes/s1-sandcastle.md`, F7 and F8).
-   - Open risk, not settled: any OAuth call that needs the bearer token and reaches a host other than
-     `ANTHROPIC_BASE_URL` (for example a profile lookup or token refresh) would go through a CONNECT tunnel,
-     where the proxy cannot inject without decrypting it. The dummy-token run contacted only the base URL,
-     but a dummy token cannot reach the successful-response paths. The real-token run decides this.
+   - Open risk, narrowed but not settled. The real-token run (F9) reached the upstream through the proxy with
+     the subscription token: two 200s from api.anthropic.com. No attempt to reach any other host showed up in the
+     agent's stderr, and there were no DNS or connection errors. The run was short (about 26 seconds, two
+     upstream requests), so it does not exercise a profile lookup or token refresh that happens later. Those
+     remain unverified. Any bearer-token call to a host other than `ANTHROPIC_BASE_URL` would go through a CONNECT
+     tunnel, where the proxy cannot inject without decrypting, and it would fail on the internal network.
    - If a later change needs such a call, the proxy decrypts it with its own CA. That CA's private key is
      generated per machine, stays on the host proxy, and is never in the image or the repo. The sandbox would
      trust only the CA's public certificate.
