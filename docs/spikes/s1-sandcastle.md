@@ -128,7 +128,7 @@ Result: `local` drops `CLAUDE.md` and `.claude/skills`. `project` keeps both. Sa
 - External fetch: `blocked EAI_AGAIN`, exit 0.
 - In the default bridge network the same fetch to the npm registry returned 200 (`probe.mjs`), so the difference is the network choice.
 
-Result: Sandcastle lets us choose the container's network. Slice 1b does not need the move-and-reconnect fallback. Gap: the model gateway is only reachable through the proxy, and the proxy has not been built. Testing a dual-homed proxy is the next step (see Unresolved).
+Result: Sandcastle lets us choose the container's network. Slice 1b does not need the move-and-reconnect fallback. The model API is only reachable through the dual-homed proxy, which F4 and F9 later built and tested.
 
 ### 9. Read-only mount
 
