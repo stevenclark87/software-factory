@@ -76,9 +76,9 @@ fan-out.
    resume payload arrive with slices 1b and 2.
    - `ClaudeCodeAdapter.prepare` generates the factory sandbox settings (edits in the worktree, `.env`
      reads and `curl` denied, no bypass mode), separate from coach-stack's interactive
-     `.claude/settings.json`. Permissions come only from these settings and `--allowedTools` /
-     `--disallowedTools`; slice 1 verifies they apply without workspace trust (S1 showed they do). Settings generation stays in slice 1 because the path cannot run Claude
-     Code without permissions.
+     `.claude/settings.json`. Factory permissions come from these settings and `--allowedTools` /
+     `--disallowedTools`; slice 1 verifies they apply without workspace trust (F10 probe 2: they do). Settings generation stays in slice 1 because the path cannot run Claude
+     Code without permissions. F10 also found that coach-stack's project `deny` and `ask` rules still apply under `--setting-sources project`. Its `allow` list and `defaultMode` are ignored while the workspace is untrusted. The factory cannot remove a coach-stack `deny` or `ask`.
    - Memory capture hooks are suppressed by the profile's `env` (`COACH_STACK_MEMORY_RUN=1`); the adapter
      runs `scripts/memory/session-start.mjs` at sandbox open, without the variable, and passes the output
      with `--append-system-prompt`.
@@ -87,11 +87,15 @@ fan-out.
      worktree (no `.factory/` fallback). Here the source is the hand-written ticket; slice 4 replaces
      it with a GitHub fetch.
    - Owns the sandbox image from S1's Dockerfile (tag includes a hash of the lockfile; Claude Code via the
-     native installer, pinned by version and sha256). Egress enforcement is slice 1b.
+     native installer, pinned by version and sha256). The credential proxy and the `--internal` network are slice 1 (F10); the allowlist stays in 1b.
    - Each Temporal activity gets a start-to-close timeout, because Temporal requires one.
    - Limits. The tracer profile sets small real values for one hand-written ticket: `stepTimeoutMinutes` 10,
      `maxTurnsPerStep` 30, `ticketRunMaxTokens` 500000 and `ticketRunMaxCostUsd` 2. These are not baselines.
      Slice 1 refuses to run if any limit is `null`. Slice 1b adds the breakers that use these limits.
+   - Decisions from the S1 slice 1 pre-work (F10):
+     - Slice 1 includes the credential proxy (`MODE=oauth`), the subscription token in a 0600 host file, a dummy `CLAUDE_CODE_OAUTH_TOKEN` in the sandbox, and an `--internal` network that makes the proxy the only way out. Slice 1b keeps the egress allowlist and path restriction, plus the header and limit tests.
+     - Slice 1 passes `--max-turns` (`maxTurnsPerStep`) and `--max-budget-usd` on its single agent step, through the wrapper. Limits between steps stay in 1b.
+     - The tracer runs Opus (`claude-opus-5-5`). Probe 3 passed on a retry with a $0.50 cap. The first attempt at $0.10 was exhausted on its first call, and a first Opus call cost $0.14 to $0.25, so a per-step budget must cover a first call. Haiku was the fallback if probe 3 had failed.
 
    *Blocked by S1, S3 and 7a.*
 1b. **Hardening.** Makes slice 1 safe to run unattended. Must land before any S2-generated ticket runs.
@@ -100,7 +104,7 @@ fan-out.
      Docker network (S1: Sandcastle can choose the network), and the proxy, dual-homed, is its only way out.
      The proxy also holds the subscription credential (a 0600 host file, outside the repo and the image) and adds
      it upstream as `Bearer`; the sandbox holds a dummy `CLAUDE_CODE_OAUTH_TOKEN` (ADR 0004). The sandbox-to-proxy
-     hop is plain HTTP on the internal network; the proxy opens TLS upstream. No S2-generated ticket runs without the proxy.
+     hop is plain HTTP on the internal network; the proxy opens TLS upstream. No S2-generated ticket runs without the proxy. Slice 1 already runs the proxy and the internal network (F10); this slice adds the allowlist and path restriction.
    - The event log: a JSONL writer and the first events (`run.started`, `check.result`, `run.completed`).
      `run.completed` carries tokens, `costUsdApiEquivalent` and the ticket's `size:*` label, or `unsized` when there is none.
    - Ticket-run transcripts are kept as run memory.

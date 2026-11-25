@@ -10,7 +10,7 @@
 
 | Required result | Decision | Slice consequence |
 | --- | --- | --- |
-| Egress case | **Sandcastle can choose the container network.** `docker({ network })` attaches the container only to the named network. Verified: `docker inspect` lists only the internal network, and an external fetch fails with `EAI_AGAIN`. | Slice 1b attaches the sandbox to the internal network directly. The move-and-disconnect fallback is not needed. The proxy must still be the only route out, which means it is dual-homed (internal network plus a route to the model gateway). That is untested. |
+| Egress case | **Sandcastle can choose the container network.** `docker({ network })` attaches the container only to the named network. Verified: `docker inspect` lists only the internal network, and an external fetch fails with `EAI_AGAIN`. | Slice 1b attaches the sandbox to the internal network directly. The move-and-disconnect fallback is not needed. The proxy must still be the only route out, so it is dual-homed (internal network plus bridge). F4 tested this with a trivial call. |
 | Read-only mount | **Supported.** `docker({ mounts: [{ hostPath, sandboxPath, readonly: true }] })`. Reads work; writes fail with `Read-only file system`. | Slice 1 puts the ticket and spec files outside the worktree. The `.factory/` fallback and its diff check are not needed. |
 | `--max-budget-usd` in print mode | **Works in Claude Code 2.1.311** (`error_max_budget_usd`, exit 1). **Sandcastle's `claudeCode()` cannot pass it**, nor `--max-turns` or `--setting-sources`. Passing them needs a custom `AgentProvider` that wraps `claudeCode()` and appends flags (verified in `capped-run-probe.mjs`). The check runs after each API call, so one call can overshoot the budget. | Slice 1b sets `--max-budget-usd` per step, with `--max-turns` as a backstop, through the wrapper. Each step's budget must cover the worst-case first call (see Budget section). |
 | Baseline run numbers | One real `run()` on a scratch branch (Opus 5.5, confirmed from the transcript; trivial task, see F1): **$0.1801**, **3 API calls**, **14.0 s agent time**, **43.8 s wall including 21.6 s sandbox setup**. Tokens are in the table below. | Baseline for slice 1b defaults. It is a trivial task, so it is a floor, not a ticket-run estimate. Take the tracer-bullet run as the second baseline. |
@@ -128,7 +128,7 @@ Result: `local` drops `CLAUDE.md` and `.claude/skills`. `project` keeps both. Sa
 - External fetch: `blocked EAI_AGAIN`, exit 0.
 - In the default bridge network the same fetch to the npm registry returned 200 (`probe.mjs`), so the difference is the network choice.
 
-Result: Sandcastle lets us choose the container's network. Slice 1b does not need the move-and-reconnect fallback. Gap: the model gateway is only reachable through the proxy, and the proxy has not been built. Testing a dual-homed proxy is the next step (see Unresolved).
+Result: Sandcastle lets us choose the container's network. Slice 1b does not need the move-and-reconnect fallback. The model API is only reachable through the dual-homed proxy, which F4 and F9 later built and tested.
 
 ### 9. Read-only mount
 
@@ -284,6 +284,42 @@ Other hosts: none visible. The proxy log shows only the upstream host. The sandb
 Token scan (counts only, comparing against the file's contents inside a script): the long-run output dir (15 files) had 0 matches for the full token, the first 24 characters, or the last 24 characters. The worktree (82 files) had 0 matches.
 
 Result: the one-year setup-token and the OAuth-mode proxy kept working for more than 15 minutes, and a resumed session worked at t=16. The >15-minute TODO is closed.
+
+### F10. Slice 1 pre-work at 8f9c82e
+
+Pin and setup:
+
+- coach-stack pin: `factory-pilot` at `8f9c82e` (`origin/factory-pilot`). The scratch clone was detached at `8f9c82e`. Its local `factory-pilot` branch was `53f68b2`, a different commit with the same message. The F1 to F9 follow-ups ran against `53f68b2`. Local `factory-pilot` was then reset to `origin/factory-pilot` (`8f9c82e`) for these probes. Whether `53f68b2` already contains the 7a skills commit was not checked.
+- Image: `factory/coach-stack-node20:3-2a0ca7eeaa5e`, not rebuilt. The pin's `package-lock.json` hashes to `2a0ca7eeaa5e`, the same as the rev 3 tag.
+- Models: `claude-haiku-5-5` and `claude-opus-5-5`, called directly over OAuth through the credential proxy (MODE=oauth, dummy `CLAUDE_CODE_OAUTH_TOKEN` in the sandbox, `--internal` network). Trust was never accepted. No `hasTrustDialogAccepted` write was used.
+- Scripts: `docs/spikes/s1-sandcastle/slice1-lib.mjs`, `slice1-sandbox-probes.mjs` (probes 1, 2, 5 and the first probe 3 attempt), `slice1-opus-probe.mjs` (probe 3 retry), `slice1-stdout-probe.mjs` (probe 4), `slice1-token-scan.mjs`. Raw output is in `factory/spike-s1/slice1/` (outside the repo).
+
+Results:
+
+| # | Probe | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | `--setting-sources project` at the pin | Passes. CLAUDE.md, the project skills, the project agents and the SessionStart hook all load. `local` drops all four. | `sandbox-probes/p1-project.jsonl` init: 47 skills, all 31 `.claude/skills` entries present, none missing, plus 16 user or plugin skills. 15 agents, including the project's. Transcript `instructions` attachment names CLAUDE.md. `hook_started`/`hook_response` for `SessionStart:startup`. `p1-local.jsonl`: 17 skills (1 of the 31), 5 built-in agents, no `instructions` attachment, no hooks. |
+| 2 | coach-stack settings with an untrusted workspace | Factory deny and factory allow apply. Coach-stack `ask` and `deny` still apply. Coach-stack `defaultMode` and its `allow` list do not. See below. | `sandbox-probes/p2-*.jsonl`, `permission_denials`, `tool_result` events. |
+| 3 | Opus over OAuth, one call | Passes on the retry. The first attempt, with a $0.10 cap, hit `error_max_budget_usd` before replying. The retry with a $0.50 cap succeeded. | `p3-opus.json` (first attempt): model call made, `total_cost_usd` 0.2456, `terminal_reason` `budget_exhausted`. `opus-probe/summary.json` (retry): `subtype` success, `result` OK, served `claude-opus-5-5`, `total_cost_usd` 0.1426, cache creation 17,490, cache read 12,961, output 4. |
+| 4 | Sandcastle `result.stdout` format | Summarized text, not raw stream-json. §3 is right. | `stdout-probe/summary.json`: `stdout` is `DONE` (4 bytes). The tee'd raw stream has 8 JSON lines (`system:hook_started`, `hook_response`, `init`, `assistant`, `rate_limit_event`, `user`, `result:success`). Cost and tokens must come from the `result` event, not `RunResult`. |
+| 5 | Memory snapshot unwrap | Passes. With the variable unset, the envelope is `hookSpecificOutput` with `hookEventName` SessionStart. With the variable set, no snapshot is emitted. | `sandbox-probes/p5-session-start-unset.json`: 3,499 bytes of stdout. `hookSpecificOutput.additionalContext` is 3,403 bytes. `p5-session-start-set.json`: 0 bytes. `p5-claude-set` run: SessionStart hook ran with `output_bytes` 0. |
+
+Probe 2, answer by answer. Evidence is from `permission_denials` and `tool_result` events, and `init.permissionMode`. The model's own report was not used.
+
+- (a) `defaultMode`. The project's `defaultMode: acceptEdits` did not apply. With `--setting-sources project` and no mode flag, `init.permissionMode` is `default` (`p2a-project-noflag`). With `--permission-mode acceptEdits` it is `acceptEdits` (`p2-alt-acceptedits-edit`). Untrusted-workspace status is the likely cause, but a trusted run was not made, so the cause is inferred.
+- (b) `ask: Edit(*)`. The project `ask` rule blocks an edit in print mode. In the control run (project sources only), a Bash redirect into the worktree returned "needs approval", and a Write call returned "haven't granted it yet". Two denials, and the run ended with `error_max_turns`. Under the factory settings the same Bash-redirect edit succeeded, with no denials and the file present (`p2-factory-edit`). So factory `allow` overrode the project `ask` for that path. Caveat: the model used Bash. With `--allowedTools Edit Write` (`p2-alt-flags-edit`), the Write tool succeeded and the Bash redirect still needed approval. The Edit and Write tools under the factory settings file were not tested on their own.
+- (c) `curl` and `.env`. Denied under the factory settings. `curl --version` returned "Permission to use Bash with command curl --version has been denied", and `Read` of `.env` returned "File is in a directory that is denied by your permission settings" (`p2-factory-curl`, `p2-factory-env`). The control run denied both as well, so coach-stack's own deny rules are honoured without trust. The two checks cannot separate the factory layer from coach-stack's. A factory-only marker, `Bash(hostname)`, is not in coach-stack's settings. It was denied under the factory settings (`p2-factory-host`) and allowed in the control (`p2-control-host`, 0 denials). So the factory deny layer applies.
+- (d) Edit inside the worktree. Succeeds under the factory settings (`p2-factory-edit`: exit 0, `hello` printed, file present in `ls`). The factory settings file was mounted read-only (`touch` failed with "Read-only file system").
+
+Coach-stack and factory settings: both apply. Coach-stack's settings did not override the factory's in any tested case. The factory's deny applied, and the factory's allow beat coach-stack's `ask` for the edit. But coach-stack's `deny` and `ask` are not removed either. `--setting-sources project` keeps them, and `--setting-sources local` would drop CLAUDE.md and the skills (F2). So the effective permissions are the union of coach-stack's project rules and the factory rules. The factory cannot remove a coach-stack `deny` or `ask`. The untrusted-workspace warning, "Ignoring 7 permissions.allow entries", is the coach-stack `allow` list. Those seven entries are ignored, and the `defaultMode` is ignored. Factory permissions must therefore come from the factory settings and `--allowedTools`, not from coach-stack's `allow` list. This is a finding for the design and for `ClaudeCodeAdapter.prepare`.
+
+Other notes:
+
+- Probe 2 `error_max_turns` on the control edit and the alternative flags edit: the two-turn limit was too small for the model's retry. Those cases are read for their denials, not for pass or fail.
+- Probe 4, first attempt: Sandcastle rejected the run because `COACH_STACK_MEMORY_RUN` was set on both the agent provider and the sandbox. The agent-side key was removed and the probe was re-run once.
+- Budget: a first Opus call costs about $0.14 to $0.25 in the measured runs (S1 had estimated "a few cents"). The first attempt at $0.10 was exhausted on the first call. Per-step budgets must cover a first call.
+- The S1 Unresolved item about the pre-flight skills commit is closed: probe 1 ran at 8f9c82e, with the skills present.
+- Token scan (counts only, by `slice1-token-scan.mjs`, full token, first 24 and last 24 characters): 0 matches across the probe output tree, the worktree and the diff against `origin/main`. Re-run after the doc commits, with the count recorded in the handback.
 
 ## Unresolved
 
