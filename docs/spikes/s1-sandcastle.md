@@ -360,7 +360,9 @@ Probe 7, per-skill deny:
   prompt is expanded before any tool call. And a `Skill` deny does not stop `Read` of the skill's `SKILL.md`.
 - `grill-with-docs` at `8f9c82e` only says to call the Skill tool for `grilling` and `domain-modeling`. Neither skill is
   installed in coach-stack (`.agents/skills/`, `.claude/skills/`, `skills-lock.json`), so `grill-with-docs` cannot
-  work as committed. This blocks S2.
+  work as committed. Fixed in coach-stack `334533c`, which installs both from `mattpocock/skills` and re-pins
+  `skills-lock.json`. `domain-modeling` defaults to `docs/adr/`; S2 records whether the repo's
+  `docs/architecture/adrs/` config wins.
 
 Token scan: 0 matches (full, first 24, last 24 characters) across `factory/spike-s1/slice1/` and the worktree.
 
