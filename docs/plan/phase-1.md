@@ -7,7 +7,7 @@ is opened but not merged. Escalations don't fail the gate if a human resumes the
 first-pass rate, with no threshold. No UI in this phase; runs are triggered from the CLI.
 
 Convert each item below into a GitHub issue with `to-tickets` (or by hand). Spikes are time-boxed and
-end in a short written finding, committed to `docs/spikes/`.
+end in a short written finding, committed to `docs/spikes/`. Each finding names the target-repo commit it was tested against.
 
 ## Spikes (run in parallel, first)
 
@@ -92,6 +92,10 @@ fan-out.
    - Limits. The tracer profile sets small real values for one hand-written ticket: `stepTimeoutMinutes` 10,
      `maxTurnsPerStep` 30, `ticketRunMaxTokens` 500000 and `ticketRunMaxCostUsd` 2. These are not baselines.
      Slice 1 refuses to run if any limit is `null`. Slice 1b adds the breakers that use these limits.
+   - From S1 F11 and the user's review:
+     - Target-repo settings: the shared `.claude/settings.json` holds only restrictions that should also bind factory agents. coach-stack `658b812` moved `ask: Edit(*)` and `Bash(rm *)` to `.claude/settings.local.json`; at `8f9c82e` they blocked the factory's Edit and rm.
+     - The profile's `skills` list is enforced with a generated `Skill(<name>)` deny for every other committed skill. The factory's prompts never start with `/`, because a slash prompt bypasses that deny.
+     - The wrapper captures the full event stream on the host, or to a writable mount outside the worktree, never inside it. Slice 1b uses that capture as the transcript store.
    - Decisions from the S1 slice 1 pre-work (F10):
      - Slice 1 includes the credential proxy (`MODE=oauth`), the subscription token in a 0600 host file, a dummy `CLAUDE_CODE_OAUTH_TOKEN` in the sandbox, and an `--internal` network that makes the proxy the only way out. Slice 1b keeps the egress allowlist and path restriction, plus the header and limit tests.
      - Slice 1 passes `--max-turns` (`maxTurnsPerStep`) and `--max-budget-usd` on its single agent step, through the wrapper. Limits between steps stay in 1b.
@@ -120,6 +124,8 @@ fan-out.
      limit matters:
      - S1 confirmed `--max-budget-usd` works in print mode, so each agent step gets `--max-budget-usd` set
        to the ticket run's remaining budget minus about one call, and `--max-turns` stays on as a backstop;
+     - a step does not start when the remaining ticket-run budget is below about one first call on the profile's model
+       (about $0.25 API-equivalent on Opus, S1 F10); the ticket escalates instead;
      - if it does not work, `--max-turns` is the only limit inside a step. The plan records this as a
        known limit.
 

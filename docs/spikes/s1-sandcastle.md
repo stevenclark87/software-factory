@@ -321,6 +321,49 @@ Other notes:
 - The S1 Unresolved item about the pre-flight skills commit is closed: probe 1 ran at 8f9c82e, with the skills present.
 - Token scan (counts only, by `slice1-token-scan.mjs`, full token, first 24 and last 24 characters): 0 matches across the probe output tree, the worktree and the diff against `origin/main`. Re-run after the doc commits, with the count recorded in the handback.
 
+### F11. Edit, Write and rm under factory settings; per-skill deny (8f9c82e and 658b812)
+
+Pin and setup: the same image, proxy and untrusted workspace as F10. Haiku, `--max-turns 3`,
+`--setting-sources project --settings <factory settings> --permission-mode default`. Bash was disallowed for the
+Write and Edit cases so the model had to use those tools. Script: `slice1-edit-skill-probes.mjs`. Raw output:
+`factory/spike-s1/slice1/edit-skill-probes/` (8f9c82e), `edit-skill-probes-658b812/` and `skill-probes-tdd/`
+(8f9c82e). Results come from `permission_denials` and from the file system after each run.
+
+Probe 6, Edit, Write and rm:
+
+| coach-stack commit | Settings | Write tool | Edit tool | `rm` (Bash) | `git push` | `.env` read |
+| --- | --- | --- | --- | --- | --- | --- |
+| `8f9c82e` | project only (control) | denied | denied | denied | | |
+| `8f9c82e` | factory | **works** | **denied** ("haven't granted it yet") | **denied** | | |
+| `8f9c82e` + shared `ask` reduced to `git push` (in the sandbox only) | factory | works | works | works | denied | denied |
+| `658b812` (that change, committed) | factory | works | works | works | denied | denied |
+
+- At `8f9c82e`, coach-stack's shared `ask: ["Edit(*)", "Bash(rm *)"]` beats the factory's `allow: Edit(./**)` and
+  `Bash(rm slice1-*)`. In print mode an `ask` is a denial. The factory `Write(./**)` allow did win, because no
+  `ask` names Write. This corrects F10 (b): the Bash-redirect edit there succeeded only because no rule asked for it.
+- coach-stack `658b812` moves `Edit(*)` and `Bash(rm *)` to `.claude/settings.local.json` (gitignored, so it applies
+  only to interactive sessions on the machine that has it). The `git push` ask and the `.env` and `curl` denies stay
+  in the shared file. Factory Edit, Write and rm then work, and push and `.env` are still blocked.
+- Without the factory settings, the untrusted workspace denies all three: coach-stack's `allow` list is ignored, so
+  only the factory supplies allows.
+- Design rule: a target repo's shared Claude settings contain only restrictions that should also bind factory agents.
+
+Probe 7, per-skill deny:
+
+- `grill-with-docs`, `triage`, `wayfinder`, `setup-matt-pocock-skills`, `to-spec`, `to-tickets`, `implement` and
+  `improve-codebase-architecture` have `disable-model-invocation: true` at `8f9c82e`. The Skill tool refuses them
+  ("cannot be used with Skill tool due to disable-model-invocation"), with or without a deny rule.
+- `Skill(<name>)` works as a permission rule. With `tdd` (model-invocable): no rule, the Skill tool launches it;
+  `deny: ["Skill(tdd)"]` in the factory settings, or `--disallowedTools 'Skill(tdd)'`, gives a `permission_denials`
+  entry and "Skill execution blocked by permission rules".
+- Two gaps. A prompt that starts with `/tdd` still loads the skill under the deny rule, because a slash command in the
+  prompt is expanded before any tool call. And a `Skill` deny does not stop `Read` of the skill's `SKILL.md`.
+- `grill-with-docs` at `8f9c82e` only says to call the Skill tool for `grilling` and `domain-modeling`. Neither skill is
+  installed in coach-stack (`.agents/skills/`, `.claude/skills/`, `skills-lock.json`), so `grill-with-docs` cannot
+  work as committed. This blocks S2.
+
+Token scan: 0 matches (full, first 24, last 24 characters) across `factory/spike-s1/slice1/` and the worktree.
+
 ## Unresolved
 
 - **Token refresh for the proxy.** The proxy holds a host-minted token (15-minute helper TTL). Runs longer than that need the worker to rewrite the proxy token file before it expires. Tested for 20 minutes with four host-spaced calls, one resumed (F9).
@@ -329,7 +372,7 @@ Other notes:
 - **Context inventory relied on Haiku's self-report.** Yes or no answers are a weak check. The memory hook output size (3,499 bytes versus 0) is the stronger evidence for section 6.
 - **Budget overshoot size on Opus.** The first-call overshoot was measured on Haiku ($0.0023) and estimated for Opus. A per-step budget should be set from measured first-call costs on the profile's model.
 - **Performance on macOS bind mounts.** `npm ci` on a bind-mounted worktree took 20 s; a large repo or heavier tests were not measured.
-- **Pre-flight skills commit.** It was not on factory-pilot when the spike ran. The skills check should be repeated after it lands.
+- **Pre-flight skills commit.** Closed: F10 probe 1 re-ran the skills check at `8f9c82e`.
 
 ## Commands run (summary)
 
